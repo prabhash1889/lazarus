@@ -2,8 +2,8 @@
 
 > **Project name:** Lazarus  
 > **Product category:** Local-first, multi-agent, spec-driven software engineering orchestration platform  
-> **Target:** A complete Traycer-like application implemented independently from scratch, with all core execution, orchestration, context, artifacts, verification, security, integrations, and persistence running locally on the user's machine. Lazarus-hosted cloud, collaboration, cross-device sync, PWA control, and future remote execution are deliberately deferred.
-> **Document status:** Final local-first implementation blueprint. This is the complete current build scope, not an MVP-only plan. Cloud/distributed features are explicitly excluded from the active roadmap and can be added later through preserved extension seams.
+> **Target:** A recognizably Traycer-like local application implemented independently from scratch. Product parity means the same core desktop journey—Task/Epic tabs, chat and terminal agents, artifacts, files/diffs, worktrees, provider switching, and agent-to-agent coordination—not identical branding or cloud behavior.
+> **Document status:** Revised after a source-level audit of the original Traycer repository. Sections marked 1.x are deliberately deferred; local 1.0 is the parity release, not the entire aspirational platform.
 > **Prepared:** 2026-08-23  
 > **Review:** Cross-checked against Traycer's public GitHub repository, public documentation index, development guide, and currently documented Desktop/agent architecture on 2026-08-23.  
 > **Implementation principle:** Build Lazarus independently. Reproduce useful product *capabilities and workflows*, not Traycer's private Host/backend implementation, proprietary prompts, branding, or protected UI assets.
@@ -41,7 +41,7 @@ The active Lazarus product should match the useful **local** concepts visible in
 
 - Tauri desktop application;
 - local `lazarus-hostd`;
-- local `lazarus-runnerd`;
+- a single local `lazarus-hostd` that also owns PTYs and child processes;
 - local SQLite persistence;
 - workspace/repository management;
 - Git/worktree management;
@@ -50,8 +50,8 @@ The active Lazarus product should match the useful **local** concepts visible in
 - provider/model adapters;
 - canonical context and provider switching;
 - local code indexing/retrieval;
-- Specs/Tickets/Stories/Reviews/ADRs;
-- multi-agent DAG orchestration;
+- Specs/Tickets/Stories/Reviews (ADRs and other document conventions use Spec templates rather than new wire-level artifact kinds);
+- supervised multi-agent orchestration with parent/child lineage;
 - durable local agent mailboxes;
 - deterministic + AI verification;
 - repair loops;
@@ -80,6 +80,10 @@ The active Lazarus product should match the useful **local** concepts visible in
 - SaaS billing;
 - enterprise SSO/SCIM;
 - self-hosted Lazarus cloud.
+- autonomous DAG scheduling and Autopilot presets;
+- embeddings/full symbol-graph retrieval;
+- a separate runner daemon;
+- broad plugin signing/marketplace machinery beyond local skills and provider adapters.
 
 Do not build placeholder cloud services. Preserve stable IDs, versioned protocols, versioned exports, and clean domain boundaries so distributed features can be added later without rewriting the local core.
 
@@ -114,7 +118,7 @@ The previous plan remains the architectural basis, with these rules now made exp
 1. **One-machine authority.** For the current product, the local Host is authoritative for Task, Agent, Artifact, Workflow, Verification, and integration state.
 2. **No cloud dependency.** Starting, planning, running, verifying, reviewing, and restoring Tasks must work without a Lazarus account or Lazarus server.
 3. **Worktree != sandbox.** Worktrees isolate Git changes; containers/OS sandbox mechanisms provide stronger execution isolation.
-4. **Separate `hostd` and `runnerd`.** Host restarts/updates should not unnecessarily terminate compatible PTYs or agent processes.
+4. **One Host daemon for 1.0.** Keep PTY/process supervision in `hostd`, matching the reference architecture and avoiding a second lifecycle/protocol surface. A separate supervisor is a 1.x option only if surviving Host restarts becomes a measured requirement.
 5. **Provider-neutral core.** Provider-specific behavior remains inside adapters/provider packs.
 6. **Canonical local history.** Lazarus owns durable canonical messages/checkpoints; provider-private sessions are only optimizations.
 7. **A2A is local and durable.** Mailboxes are persisted locally and delivery depends on agent capabilities.
@@ -149,6 +153,37 @@ That is enough preparation. Do **not** add sync queues, CRDTs, cloud databases, 
 
 ---
 
+## 0.3 Source-audit verdict and parity contract
+
+Following the previous version of this plan would have produced a capable local orchestration platform, but not a recognizably Traycer-like application. The largest mismatches were its global protocol version, fixed-pane UX, separate runner daemon, product “modes,” and company-scale 1.0 scope.
+
+The audited local parity contract is:
+
+| Reference behavior | Lazarus 1.0 requirement |
+|---|---|
+| Task/Epic is the durable workspace | One Task owns chats, terminal agents, artifacts, workspace folders, terminals, files/diffs, and agent lineage. “Epic” is UI/product vocabulary for the same aggregate, not a second engine. |
+| Header tabs and a resizable tile canvas | Ship Epic, Draft, History, and Settings tabs. Inside an Epic, open chat, terminal-agent, artifact, file, diff, and plain-terminal tiles in persisted splits. |
+| Chat and Terminal agents | Keep both surfaces distinct, with durable identity and provider session metadata. |
+| Spec/Ticket/Story/Review artifacts | These four are the wire-level built-ins. ADRs, plans, decision logs, and walkthroughs are templates/conventions stored as Specs or Reviews until a real need justifies another kind. |
+| Provider/model switching and BYOA | Detect installed CLIs, support their existing subscriptions/login flows, expose capabilities honestly, and preserve Lazarus-owned canonical context. |
+| A2A lineage, transcript access, and messages | Persist parent/child relationships and messages; distinguish persisted, delivered, and consumed states by provider capability. |
+| Versioned client↔Host contract | Use per-method `{major, minor}` negotiation and separately version persisted records. |
+| Cloud collaboration, sharing, and cross-device sync | Explicitly not parity requirements for local 1.0. Therefore local 1.0 is “Traycer-like local core,” not full Traycer parity. |
+
+Reference-source rules that constrain implementation:
+
+1. The protocol package is the TypeScript/Zod source of truth. Generate JSON Schema and Rust bindings from it; do not hand-maintain parallel Protobuf and Rust contracts.
+2. RPC compatibility is negotiated per method, with additive-minor checks, explicit upgrade/downgrade bridges, a released-floor method set, and optional methods that degrade to `unsupported` or a named fallback.
+3. Use one `hostd` in 1.0. The Desktop delegates Host install/update/start/stop/doctor to the bundled CLI and connects directly to the authenticated local Host endpoint.
+4. Build the tab strip and tile canvas in the first GUI phase so they are not retrofitted after feature screens exist.
+5. Local 1.0 uses optimistic artifact revisions and an explicit conflict view. Add Yjs/CRDT only with collaboration or simultaneous multi-client editing.
+6. Planning, review, critique, and walkthrough behavior ships as versioned skills/workflows on the same Task surface, not as separate top-level application modes.
+7. Basic lexical/path/symbol retrieval is enough for 1.0. Embeddings, a full symbol graph, autonomous DAG execution, and broad plugin machinery are 1.x work unless a vertical-slice acceptance test proves they are needed.
+
+When any later section conflicts with this parity contract, this section wins.
+
+---
+
 # 1. End-State Product Goals
 
 The **current local-first Lazarus product is complete** when a developer can:
@@ -158,7 +193,7 @@ The **current local-first Lazarus product is complete** when a developer can:
 3. Open one or multiple local Git repositories.
 4. Create a Task from free text, selected files/diffs/images, local specs, or an optionally imported issue.
 5. Index large repositories incrementally without exhausting CPU/RAM.
-6. Generate Quick Plans, detailed Plans, Phases, Epics, Reviews, and bounded Autopilot workflows.
+6. Invoke Quick Plan, technical planning, phased planning, Epic/ticket breakdown, critique, review, and walkthrough skills from the Task surface.
 7. Store goals, requirements, decisions, tickets, reviews, and evidence as durable local artifacts.
 8. Launch one or many coding agents.
 9. Use different providers/models for exploration, planning, implementation, testing, debugging, security review, and final review.
@@ -209,16 +244,16 @@ These are future expansion areas, not missing implementation tasks.
 | Provider integrations | Multiple coding agents | Versioned provider-pack SDK for CLI and API agents |
 | Model switching | Shared context | Provider-neutral canonical context ledger + checkpoints |
 | Worktrees | Git worktrees | Worktrees + local containers + collision detection |
-| Multi-agent | Parent/child + messaging | Durable local mailboxes, DAGs, leases, routing, budgets |
-| Planning | Plans/phases/epics | Quick/Plan/Phases/Epic/Review/Autopilot workflows |
+| Multi-agent | Parent/child + messaging | Durable local mailboxes, lineage, transcript permissions, and supervised parallel agents |
+| Planning | Plans/phases/epics | Versioned planning/review skills on the Task surface; Autopilot deferred |
 | Verification | AI verification | Deterministic evidence gates + independent reviewers + bounded repair |
 | Artifacts | Specs/tickets/stories/reviews | Versioned typed local artifacts + relations + traceability |
 | Context | Shared context | Hybrid retrieval + symbol graph + context budgeting + provenance |
 | Cost visibility | Usage/rate information | Per-agent/per-task budget, provider price catalog, forecasts, alerts |
-| Reliability | Host lifecycle | `hostd`/`runnerd`, checkpoints, resumable updates, watchdogs, crash recovery |
+| Reliability | Host lifecycle | Single `hostd`, checkpoints, resumable staged updates, diagnostics, crash recovery |
 | Security | Provider + Host security | Capability policy, containers, secrets broker, audit log, signed plugins |
 | Extensibility | MCP/custom agents | MCP + provider SDK + workflow SDK + skills/tool packages |
-| Automation | Autonomous mode | Policy-governed DAG execution with stop conditions and escalation |
+| Automation | Autonomous mode | 1.x: policy-governed DAG execution after supervised workflows are reliable |
 | Git workflow | Branch/diff/review | Attributed diffs, integration evidence, local commits, optional PR automation |
 | Data ownership | Product-managed data | Local SQLite + open Markdown/export formats + backups |
 | CI | Local app workflow | Headless local CI/reviewer mode and GitHub Actions-compatible CLI |
@@ -243,9 +278,9 @@ Implement these as primitives:
 
 ---
 
-# 3. Product Modes
+# 3. Workflow Skills and Presets
 
-Do not create completely separate engines for each mode. All modes should compile into the same internal `WorkflowGraph`.
+These are user-invoked skills or workflow presets inside a Task, not navigation modes or separate engines. In 1.0 they may be simple prompt/skill packages; only workflows that need scheduling compile into a `WorkflowGraph`.
 
 ## 3.1 Quick Mode
 
@@ -368,9 +403,9 @@ Review pipeline:
 9. evidence and location for every finding;
 10. optional automated fix task.
 
-## 3.6 Autopilot Mode
+## 3.6 Autopilot (1.x)
 
-Autopilot compiles a Task into a DAG.
+Autopilot is deferred until the manual Task → agent → diff → verification loop and the supervised multi-agent loop are reliable. When added, it compiles a Task into a DAG.
 
 Example:
 
@@ -420,7 +455,6 @@ flowchart TB
 
   subgraph LocalRuntime
     Host[lazarus-hostd]
-    Runner[lazarus-runnerd]
     Git[Git + Worktree Manager]
     Index[Code Intelligence + Retrieval]
     DB[(SQLite)]
@@ -441,7 +475,6 @@ flowchart TB
   Desktop <-->|Lazarus Protocol| Host
   CLI <-->|Lazarus Protocol| Host
 
-  Host <-->|process control| Runner
   Host --> Git
   Host --> Index
   Host --> DB
@@ -449,10 +482,10 @@ flowchart TB
   Host --> Sandbox
   Host --> Artifacts
 
-  Runner --> Claude
-  Runner --> Codex
-  Runner --> OpenCode
-  Runner --> OtherCLI
+  Host --> Claude
+  Host --> Codex
+  Host --> OpenCode
+  Host --> OtherCLI
   Host --> APIs
   Host --> MCP
 ```
@@ -465,7 +498,7 @@ There is no Lazarus cloud process in the current topology.
 
 Responsibilities:
 
-- install/update/supervise local Host components;
+- invoke the bundled CLI for Host install/update/start/stop/status/doctor;
 - OS integration;
 - secure deep links/OAuth callbacks for optional third-party integrations;
 - notifications;
@@ -497,23 +530,9 @@ Responsibilities:
 - local API/protocol;
 - crash recovery;
 - third-party integration clients.
-
-### `lazarus-runnerd`
-
-Small local process supervisor.
-
-Responsibilities:
-
-- PTY/ConPTY ownership;
-- coding-agent CLI child processes;
+- PTY/ConPTY ownership and coding-agent child processes;
 - process groups / Windows Job Objects;
-- stdout/stderr/PTY framing;
-- signal/cancellation handling;
-- process resource accounting;
-- bounded transcript spool/replay;
-- process reconciliation after Host restart.
-
-It does **not** own Task truth, planning, provider routing, or artifact state.
+- stdout/stderr/PTY framing, cancellation, resource accounting, and bounded replay.
 
 ## 4.3 Local authority model
 
@@ -535,7 +554,7 @@ Rules:
 - write RPCs are transactional/idempotent where needed;
 - finalized message/artifact/workflow boundaries are durable;
 - Desktop cache is disposable;
-- runner processes are reconciled against Host state after restart;
+- Host-owned child processes are marked interrupted after an unexpected Host death and may be resumed/restarted only when the provider supports it;
 - no distributed clocks, remote leases, cloud conflict resolution, or CRDT convergence are needed.
 
 ## 4.4 Local IPC
@@ -572,8 +591,8 @@ Use a polyglot monorepo:
 - **Node 24 LTS**;
 - **Nx** for TypeScript task orchestration;
 - Cargo workspace for Rust;
-- Buf/Protobuf for protocol schemas;
-- generated Rust/TypeScript protocol bindings;
+- TypeScript/Zod protocol schemas as the single source of truth;
+- JSON Schema fingerprints plus generated Rust bindings;
 - Prettier/ESLint + rustfmt/clippy;
 - GitHub Actions for CI.
 
@@ -594,7 +613,7 @@ Use a polyglot monorepo:
 - Mermaid
 - Vitest + Testing Library + Playwright
 
-Avoid introducing CRDT libraries in the current local build. Artifact revisioning is local and explicit.
+Use explicit artifact revisions with optimistic concurrency and a visible conflict view. Add a CRDT only when collaboration or simultaneous multi-client editing is in scope.
 
 ## 5.3 Local Host
 
@@ -603,7 +622,7 @@ Rust:
 - Tokio
 - Axum or local RPC transport glue where appropriate
 - serde
-- prost / tonic-generated types
+- Rust types generated from protocol JSON Schemas
 - sqlx + SQLite
 - portable-pty / platform PTY abstractions
 - notify
@@ -617,19 +636,9 @@ Rust:
 - Tantivy or SQLite FTS5
 - sqlite-vec or a small embedded vector engine if semantic retrieval is enabled
 
-## 5.4 Process supervisor
+## 5.4 Process supervision
 
-Rust `lazarus-runnerd`:
-
-- Tokio
-- PTY/ConPTY support
-- process groups / Windows Job Objects
-- local authenticated IPC
-- bounded spool files
-- resource counters
-- graceful drain/reconcile protocol
-
-Keep it deliberately small.
+Keep PTY/ConPTY and child-process supervision inside `lazarus-hostd` for 1.0. Use process groups / Windows Job Objects, bounded spool files, resource counters, and explicit interruption recovery. Split this into another daemon only after a concrete PTY-survival requirement justifies the lifecycle cost.
 
 ## 5.5 Local isolation
 
@@ -685,9 +694,8 @@ lazarus/
 │   └── test-fixtures/
 ├── crates/
 │   ├── host/                     # lazarus-hostd
-│   ├── runnerd/                  # PTY/process supervisor
 │   ├── cli/
-│   ├── protocol-rs/
+│   ├── protocol-rs/              # generated from packages/protocol-ts schemas
 │   ├── workspace/
 │   ├── git-engine/
 │   ├── worktree/
@@ -711,20 +719,6 @@ lazarus/
 │   ├── codex/
 │   ├── claude-code/
 │   └── generic-cli/
-├── proto/
-│   ├── common.proto
-│   ├── handshake.proto
-│   ├── workspace.proto
-│   ├── task.proto
-│   ├── agent.proto
-│   ├── terminal.proto
-│   ├── git.proto
-│   ├── artifact.proto
-│   ├── workflow.proto
-│   ├── verification.proto
-│   ├── provider.proto
-│   ├── permissions.proto
-│   └── integration.proto
 ├── docs/
 │   ├── architecture/
 │   ├── adr/
@@ -1062,78 +1056,78 @@ Rules:
 
 ## 9.1 Goals
 
-- Desktop, CLI, Host, and runner supervisor evolve independently within declared compatibility ranges.
+- Desktop, CLI, and Host evolve independently within declared compatibility ranges.
 - Strongly typed.
 - Supports unary RPC and streaming.
-- Capability negotiation.
-- Backward-compatible within a major version.
+- Per-method compatibility negotiation.
 - Request cancellation.
-- Reconnect and resume.
+- Reconnect and resubscribe.
 - Idempotency for write RPCs.
+- Persistence record versions remain separate from RPC versions and package semver.
 
 ## 9.2 Handshake
 
-Client sends:
+Both the unary and streaming connections exchange a complete method manifest:
 
 ```json
 {
-  "client": "desktop",
-  "client_version": "1.7.0",
-  "protocol": {"major": 3, "minor": 4},
-  "supported_features": [
-    "agent_stream_v2",
-    "artifact_revision_v1",
-    "pty_resume_v1"
-  ],
-  "auth": {"kind": "local_token", "token": "..."}
-}
-```
-
-Host replies:
-
-```json
-{
-  "host_version": "1.8.2",
-  "protocol": {"major": 3, "minor": 6},
-  "negotiated_minor": 4,
-  "capabilities": {
-    "containers": true,
-    "remote_runner": true,
-    "gpu": false,
-    "pty": true
+  "kind": "open",
+  "auth": {"kind": "local_token", "token": "..."},
+  "manifest": {
+    "system.health": {"major": 1, "minor": 0},
+    "task.list": {"major": 1, "minor": 2},
+    "agent.create": {"major": 2, "minor": 1}
   }
 }
 ```
 
-## 9.3 Envelope
+The Host replies with its own manifest. Compatibility is decided per method, not by one global protocol number:
 
-All frames include:
-
-```text
-message_id
-correlation_id?
-stream_id?
-sequence?
-timestamp
-payload_type
-payload
+```json
+{
+  "kind": "openAck",
+  "manifest": {
+    "system.health": {"major": 1, "minor": 0},
+    "task.list": {"major": 1, "minor": 3},
+    "agent.create": {"major": 2, "minor": 1}
+  }
+}
 ```
 
-Streaming guarantees:
+An incompatible required method fails with a typed classification and upgrade guidance. Optional methods declare either a fallback method or `unsupported` degradation.
 
-- per-stream ordered sequence;
-- reconnect from last acknowledged sequence;
-- bounded replay window;
-- explicit `STREAM_GAP` when replay is impossible.
+## 9.3 Compatibility and recovery
+
+Each RPC contract declares:
+
+```text
+method name
+latest {major, minor}
+request schema
+response schema
+upgrade-from-previous bridge for additive minors
+downgrade bridges for every still-supported older major
+optional degradation behavior
+```
+
+CI must enforce:
+
+- a frozen released-floor method-name set that every supported Host still serves;
+- structural additivity for minor versions using JSON Schema fingerprints;
+- executable bridge tests in both directions;
+- protocol TypeScript schemas and generated Rust bindings have matching fingerprints.
+
+Recovery does not require a universal replay envelope. Before an intentional restart, the Host broadcasts a tombstone with an outage id so clients deduplicate the restart episode. Retryable errors are explicitly labeled. After reconnect/wake, clients resubscribe and authoritative snapshots repair missed deltas.
 
 ## 9.4 Versioning rules
 
-- Major change = incompatible wire behavior.
-- Minor change = additive fields/methods.
-- Every RPC declares minimum protocol minor.
-- Unknown fields ignored.
-- Never reuse removed field numbers.
-- Keep persistence schema versioning separate from wire protocol versioning.
+Keep three independent version systems:
+
+1. package semver for distribution;
+2. per-method `{major, minor}` versions for RPC negotiation;
+3. per-record `{major, minor}` versions for local persisted data.
+
+Never use package semver as the handshake currency, and never make the SQLite migration number the RPC version.
 
 ## 9.5 Security
 
@@ -1141,7 +1135,7 @@ Local:
 
 - Host listens only on loopback by default.
 - Random bootstrap token stored with user-only permissions.
-- Optional Noise XX session encryption even on loopback.
+- Transport encryption is optional on authenticated loopback; any future remote Host transport must authenticate the Host and encrypt the channel.
 - Desktop validates Host identity.
 
 Additional local transport controls:
@@ -1160,7 +1154,7 @@ This must be excellent because Host startup failure makes the entire product fee
 
 ## 10.1 Installation
 
-Desktop ships a minimal bootstrapper.
+Desktop ships the Lazarus CLI and delegates every Host lifecycle mutation to it. Desktop never implements a second downloader/updater or directly spawns the Host.
 
 Bootstrap algorithm:
 
@@ -1172,23 +1166,35 @@ Bootstrap algorithm:
 6. persist partial download metadata;
 7. resume interrupted download;
 8. verify SHA-256;
-9. verify Minisign/Cosign signature;
-10. atomically unpack to versioned directory;
-11. switch `current` pointer;
-12. launch Host;
-13. health check;
-14. rollback to prior Host if health check fails.
+9. verify the signed manifest and payload with the pinned release trust root;
+10. unpack into `install-staging/` without holding the lifecycle lock;
+11. publish a verified `staged/` record;
+12. acquire the one cross-process CLI/Desktop lifecycle lock;
+13. reject yanked/downgrade/in-use promotions;
+14. atomically rename the current install aside and promote the stage;
+15. start and health-check the Host;
+16. retain the previous install for an explicit `host rollback` command.
+
+Do not add an automatic rollback state machine. Verified staging, atomic promotion, an explicit rollback command, and `doctor` keep the recovery path inspectable.
 
 ## 10.2 Directory layout
 
 ```text
 ~/.lazarus/
+  cli/
+    config.json
+    credentials.json
+    .lock
   host/
-    versions/
-      1.8.1/
-      1.8.2/
-    current
-    downloads/
+    install/
+      install.json
+    install-staging/
+    staged/
+      staged.json
+    download-cache/
+    identity/
+    pid.json
+    host.log
   state/
   logs/
   cache/
@@ -1893,7 +1899,7 @@ Sections:
 - Follow-ups
 - Approval state
 
-### ADR
+### ADR template (stored as a Spec)
 
 Sections:
 
@@ -1920,7 +1926,7 @@ Export:
     spec-product.md
     spec-architecture.md
     ticket-001.md
-    adr-004.md
+    spec-adr-004.md
 ```
 
 This makes the project recoverable without Lazarus.
@@ -2265,7 +2271,7 @@ Do not pass the full environment to MCP servers.
 
 ## 21.3 Skills
 
-Skills are Markdown/YAML packages:
+Skills are versioned behavior packages, not just files on disk:
 
 ```text
 skill/
@@ -2278,17 +2284,22 @@ skill/
 Manifest:
 
 ```yaml
-id: security-review
+id: artifact-critique
 version: 1.2.0
-capabilities:
-  - repo_read
-tools:
-  required: []
+trigger:
+  user_invoked: true
+  auto_match: planning_artifact_review
+context_injection:
+  position: system_adjacent
+  max_budget_share: 0.15
 permissions:
   network: false
+tools_required: []
 ```
 
 Support workspace-local skills under `.lazarus/skills/`.
+
+The 1.0 seed catalog must contain real instructions, output contracts, and evals for: epic brief, technical plan, ticket breakdown, core flows, artifact critique, code review, changeset walkthrough, and decision capture. Record the skill id/version on every AgentRun so a result can be reproduced.
 
 ---
 
@@ -2541,28 +2552,25 @@ Later in the local roadmap:
 
 ## 26.1 Global shell
 
-Left/global navigation:
+Use a persistent header tab strip, matching the reference product's working model:
 
 ```text
-Home
-Tasks
-Epics
-History
-Remote Runs
-Providers
-Extensions
-Settings
+Epic | Draft | History | Settings
 ```
 
-Top:
+Each Epic tab owns its durable Task session. Draft is the pre-Task composer. Providers, appearance, Host status, worktrees, usage, keybindings, notifications, and diagnostics are Settings panels—not separate global product areas.
+
+Top-level affordances:
 
 - Host status;
-- active workspace;
 - global search;
 - usage/budget;
-- user/org.
+- command palette;
+- notifications.
 
-## 26.2 Task layout
+## 26.2 Epic/Task layout
+
+The fixed three-column drawing below is illustrative only. The normative layout is a left resource rail plus a resizable, persisted tile canvas; inspectors are tiles or contextual overlays, not a permanently reserved right column.
 
 ```text
 ┌────────────────────────────────────────────────────────────┐
@@ -2579,6 +2587,10 @@ Top:
 │ Comments     │                               │             │
 └──────────────┴───────────────────────────────┴─────────────┘
 ```
+
+Required 1.0 tile kinds: chat, terminal-agent, plain-terminal, spec, ticket, story, review, workspace-file, git-diff, and command-output. Snapshot diff, communication graph, PR, and workflow-graph tiles may follow when their backing features exist.
+
+Closing a tile never deletes its underlying agent/artifact. Multiple tiles may show the same durable entity, and the split layout is persisted per Task.
 
 ## 26.3 Agents panel
 
@@ -2606,15 +2618,13 @@ Show:
 
 ## 26.4 Agent canvas
 
-Tabs:
+Chat and Terminal Agent are tile surfaces on the shared canvas. A Chat tile must expose:
 
-- Conversation;
-- Tool Calls;
-- Files;
-- Terminal;
-- Context;
-- Checkpoints;
-- Usage.
+- streamed messages and tool activity;
+- approvals and clarification/interview cards;
+- todo/progress stack and queued messages;
+- attachments and artifact/file/agent mentions;
+- context usage and checkpoint/fork controls.
 
 Composer:
 
@@ -2628,7 +2638,7 @@ Composer:
 - budget;
 - Send/Stop.
 
-## 26.5 Workflow graph
+## 26.5 Workflow graph (1.x)
 
 Visual DAG with:
 
@@ -2650,9 +2660,9 @@ Binary: `lazarus`.
 ## 27.1 Core
 
 ```bash
-lazarus login
-lazarus logout
-lazarus whoami
+lazarus auth status
+lazarus auth login --provider <provider>
+lazarus auth logout --provider <provider>
 lazarus doctor
 lazarus version
 ```
@@ -2810,8 +2820,7 @@ Record:
 ## 29.2 Budget hierarchy
 
 ```text
-Organization budget
- -> Project budget
+Project budget
  -> Task budget
  -> Workflow node budget
  -> Agent-run budget
@@ -3233,9 +3242,8 @@ Every release manifest includes:
 ```text
 desktop_version
 host_version
-runnerd_version
 cli_version
-protocol_major/min_minor/max_minor
+per_method_protocol_manifest_hash
 minimum_schema_version
 maximum_schema_version
 provider_pack_api_version
@@ -3246,8 +3254,8 @@ Update order:
 
 1. download and verify all required artifacts;
 2. ensure current DB/config can be backed up;
-3. update `runnerd` only if no incompatible live processes exist or after drain;
-4. update Host;
+3. atomically promote the staged Host while retaining the previous install aside;
+4. start the Host;
 5. run health + migration checks;
 6. update Desktop/CLI as applicable;
 7. commit the version pointer;
@@ -3259,7 +3267,7 @@ A failed update must leave the user with either the old working set or a clear r
 
 # 34. Implementation Phases
 
-The following phases build the **complete** end-state product. Do not interpret later phases as optional unless explicitly marked.
+Phases 0–13 plus supervised verification/review are the local parity release. Phases explicitly marked 1.x are deferred. A later phase does not start until the preceding vertical slice is reliable.
 
 ---
 
@@ -3292,7 +3300,7 @@ Freeze the invariants that every later module depends on.
   - Provider;
   - Workflow;
   - Verification;
-  - Runner.
+  - Process supervision.
 - Write threat-model skeleton.
 - Write execution-isolation matrix: policy-only vs OS/container/remote enforced.
 - Define trust classes for user/artifact/repo/tool/external context.
@@ -3330,17 +3338,18 @@ Create the contract before adding product features.
 
 ### Build
 
-- Protobuf schema project.
-- Codegen to Rust and TypeScript.
-- Envelope types.
-- handshake.
-- capability negotiation.
+- TypeScript/Zod schema registry as the contract source of truth.
+- JSON Schema fingerprint generation and Rust binding generation.
+- Per-method `{major, minor}` manifests on unary and stream handshakes.
+- Additive-minor validation and explicit upgrade/downgrade bridges.
+- Released-floor invariant and optional/degrade channel.
+- Restart tombstones and resubscription recovery.
 - unary request/response.
 - streaming.
 - cancellation.
 - errors.
 - pagination.
-- reconnect token.
+- retryable error classification.
 - idempotency key.
 - compatibility tests.
 
@@ -3369,6 +3378,53 @@ Desktop and CLI can connect to Host and display negotiated versions/capabilities
 
 ---
 
+## Phase 1.5 — Foundation realignment
+
+### Goal
+
+Migrate the already-built Phase 0/1 implementation from the superseded architecture to the audited local-parity contract before Phase 2 adds persistence, lifecycle, or additional RPCs.
+
+### Remove
+
+- `crates/runnerd` and its Cargo workspace membership;
+- `proto/`, `buf.gen.yaml`, Buf dependencies, and generated Protobuf TypeScript;
+- prost/tonic protocol code generation and the global `ProtocolVersion`/`negotiated_minor` handshake;
+- the universal `Envelope`, reconnect token, replay buffer, and `STREAM_GAP` recovery contract;
+- Phase 0 documentation that treats Runner, product modes, Autopilot/DAGs, or extra artifact kinds as local 1.0 primitives.
+
+### Build
+
+- make `packages/protocol-ts` the TypeScript/Zod contract source of truth;
+- define per-method request/response schemas and `{major, minor}` versions for the Phase 1 RPC surface;
+- generate JSON Schema fingerprints and Rust bindings from that registry;
+- exchange complete method manifests on unary and streaming connections;
+- add additive-minor validation, explicit upgrade/downgrade bridges, a frozen released-floor method set, and optional methods that degrade to a fallback or `unsupported`;
+- create a separate versioned persistence-record registry skeleton so package, RPC, and storage versions cannot be conflated;
+- replace replay-window recovery with restart tombstones, resubscription, and authoritative snapshots;
+- keep PTY/process supervision inside `lazarus-hostd`;
+- reject non-loopback Host bind addresses in local mode;
+- require and verify the per-install local token before serving RPCs, with CLI and Desktop using the same credential;
+- update README, ADR 0001, architecture invariants, protocol compatibility rules, domain glossary, and threat model to match section 0.3;
+- preserve the existing Tauri, Host, CLI, CI, health, workspace-list, and task-list shells where they still fit.
+
+### Tests
+
+- old and new per-method versions interoperate through declared bridges;
+- a breaking minor schema fails fingerprint/additivity validation;
+- every released-floor method is present on both sides;
+- an optional unsupported method degrades without failing unrelated RPCs;
+- generated Rust bindings match the TypeScript contract fingerprints;
+- restart tombstones deduplicate one outage and clients restore state by resubscribing;
+- unauthenticated requests are rejected;
+- a non-loopback local bind configuration is rejected;
+- CLI and Desktop connect successfully with the authenticated per-method manifest.
+
+### Exit gate
+
+`runnerd`, Protobuf/Buf, global protocol negotiation, and replay-window recovery no longer exist in the active code or documentation. Desktop and CLI authenticate to the loopback Host, negotiate the Phase 1 RPCs per method, display Host health, and pass the compatibility/fingerprint tests. Do not start Phase 2 until this gate passes.
+
+---
+
 ## Phase 2 — Host daemon, lifecycle, and CLI bootstrap
 
 ### Goal
@@ -3390,17 +3446,14 @@ Host (`lazarus-hostd`):
 - health API;
 - startup recovery.
 
-Runner supervisor (`lazarus-runnerd`):
+Host process supervision:
 
-- separate executable/process;
 - process/PTY ownership;
 - OS process groups / Windows Job Objects;
-- durable process handles/leases;
-- reconnect/reconcile API;
 - stdout/stderr/PTY framing;
 - bounded spool/replay;
 - resource counters;
-- drain before incompatible upgrade.
+- explicit interruption records after an unexpected Host death.
 
 CLI:
 
@@ -3408,22 +3461,22 @@ CLI:
 
 Desktop:
 
-- detect Host;
-- bootstrap if absent;
+- call the bundled CLI to detect/bootstrap/update/start/stop the Host;
 - reconnect if Host restarts;
 - visible status.
 
-Updater:
+CLI-owned updater:
 
 - signed manifest parser;
 - checksum validation;
 - resumable Range downloads;
 - partial file persistence;
-- rollback.
+- stage-then-promote under the shared cross-process lock;
+- retain a rename-aside install for explicit rollback.
 
 ### Exit gate
 
-Pull the network during a Host update, reconnect, resume download, install, restart, preserve local state, and prove a compatible long-running supervised process can be reconciled after `hostd` restarts.
+Pull the network during a Host update, reconnect, resume download, promote atomically, restart, preserve local state, and prove an interrupted agent is reported and can be explicitly resumed/restarted when its provider supports that operation.
 
 ---
 
@@ -3444,7 +3497,8 @@ Create the reusable UI architecture.
 - command palette;
 - toast/notification system;
 - keyboard shortcut manager;
-- pane/split system;
+- header tab strip for Epic, Draft, History, and Settings;
+- persisted pane/split tile canvas skeleton;
 - virtualized large lists;
 - accessibility primitives;
 - crash-safe window state.
@@ -3454,11 +3508,11 @@ Screens:
 - Home;
 - Settings;
 - Host status;
-- empty Task screen.
+- empty Epic/Task canvas.
 
 ### Exit gate
 
-Windows/macOS/Linux packages launch, connect to Host, restore window/panes, and pass basic accessibility checks.
+Windows/macOS/Linux packages launch, connect to Host, restore header tabs and canvas splits, and pass basic accessibility checks. Track xterm/diff/editor rendering separately on WebView2, WKWebView, and WebKitGTK.
 
 ---
 
@@ -3586,6 +3640,8 @@ Launch real coding agents behind a common abstraction.
 - profile storage;
 - keychain references;
 - CLI detection;
+- protocol-level provider management: list, detect version, enable/disable, custom path, existing-subscription login, API key, environment overrides, model catalog, and rate-limit usage;
+- delegated interactive login lifecycle: start, await, submit code when required, touch, and cancel;
 - model discovery interface;
 - adapter capability matrix;
 - three adapter classes: managed conversation, structured CLI, interactive Terminal Agent;
@@ -3608,6 +3664,7 @@ UI:
 - capability display;
 - CLI path selector;
 - environment overrides.
+- first-run onboarding: detect installed CLIs, connect one provider, open a repository, create the first Task, and run the first verified change.
 
 ### Exit gate
 
@@ -3797,7 +3854,7 @@ Artifact validator:
 
 ### Exit gate
 
-Create an Epic spec, split it into tickets, edit concurrently in two client sessions, export to Markdown, delete local UI cache, and reconstruct from persisted artifact state.
+Create an Epic spec, split it into tickets, provoke a stale-revision save and resolve it through the explicit conflict view, export to Markdown, delete local UI cache, and reconstruct from persisted artifact state.
 
 ---
 
@@ -3805,7 +3862,7 @@ Create an Epic spec, split it into tickets, edit concurrently in two client sess
 
 ### Goal
 
-Implement Quick, Plan, Phases, and Epic generation.
+Implement user-invoked planning skills/workflows on the shared Task surface.
 
 ### Build
 
@@ -3815,6 +3872,17 @@ Workflow definitions:
 - Plan;
 - Phases;
 - Epic requirement workflow.
+
+Seed skill packages:
+
+- epic brief;
+- technical plan;
+- ticket breakdown;
+- core flows;
+- artifact critique;
+- review;
+- changeset walkthrough;
+- decision capture.
 
 Planner tools:
 
@@ -3831,7 +3899,7 @@ Plan schema must be structured, not free-form only.
 
 ### Exit gate
 
-A large sample task yields requirements, impacted files, ordered steps, tests, risks, and traceability without manual prompt engineering.
+A large sample task yields requirements, impacted files, ordered steps, tests, risks, and traceability without manual prompt engineering, and the same eval dataset catches a deliberately weakened prompt.
 
 ---
 
@@ -3874,7 +3942,7 @@ Architect spawns Explorer and Reviewer, receives both replies after reconnect, a
 
 ---
 
-## Phase 14 — Workflow scheduler and parallel execution
+## Phase 14 — Workflow scheduler and automatic DAG execution (1.x, deferred)
 
 ### Goal
 
@@ -3974,7 +4042,7 @@ Review a seeded benchmark of known bugs; track precision/recall and regression o
 
 ---
 
-## Phase 17 — Autopilot
+## Phase 17 — Autopilot (1.x, deferred)
 
 ### Goal
 
@@ -4048,7 +4116,7 @@ GitHub issue → local Lazarus Plan/Epic → agent execution → verification �
 
 ---
 
-## Phase 19 — Local extension ecosystem
+## Phase 19 — Local extension ecosystem (1.x, deferred)
 
 ### Goal
 
@@ -4198,7 +4266,7 @@ Operations:
 - crash report generation;
 - local log viewer;
 - `lazarus doctor`;
-- Desktop/Host/runnerd/CLI compatibility matrix;
+- Desktop/Host/CLI compatibility matrix;
 - migration/rollback runbook;
 - clean-machine install tests;
 - upgrade-from-N-1 tests;
@@ -4408,7 +4476,7 @@ On startup:
 6. mark unrecoverable sessions `INTERRUPTED`;
 7. renew worktree ownership;
 8. checkpoint/inspect SQLite WAL and disk-health state;
-9. reconcile runnerd process leases;
+9. mark orphaned Host-owned processes interrupted and offer only provider-supported recovery;
 10. reconcile pending local integration operations without duplicating external mutations;
 11. emit recovery summary.
 
@@ -4421,7 +4489,7 @@ Reconnect:
 - query open Tasks;
 - resubscribe streams;
 - restore panes;
-- request events after last sequence.
+- request authoritative snapshots for subscriptions whose deltas may have been missed.
 
 ## 39.3 Provider/integration reconnect
 
@@ -4708,7 +4776,7 @@ Deterministic commands + requirement evidence + independent AI review.
 
 ### 4. Durable local execution
 
-`hostd` and `runnerd` separate durable product state from long-lived PTY/process supervision.
+One inspectable `hostd` owns durable state and process supervision; a second daemon is avoided until PTY-survival evidence justifies it.
 
 ### 5. Strong isolation
 
@@ -4780,13 +4848,13 @@ Planning, artifacts, multi-agent orchestration, verification, review, and repair
 
 ## Public Beta
 
-Requires through Phase 20.
+Requires the local parity phases through supervised verification/review plus GitHub integration.
 
-Autopilot, local third-party integrations, extension packages, and local security hardening are operational.
+The Task/Epic tab-and-canvas workflow, provider switching, artifacts, A2A, worktrees, diff/review, and recovery are operational. Autopilot and the broad extension ecosystem remain 1.x.
 
 ## 1.0 Stable
 
-Requires Phases 0–22 and every local launch gate.
+Requires the local parity scope defined in section 0.3 and every applicable local launch gate; deferred 1.x phases are not blockers.
 
 Cloud collaboration, sync, PWA, and remote runners are **not** blockers for local 1.0.
 
@@ -4800,13 +4868,13 @@ Lazarus local 1.0 is ready only if all are true:
 - [ ] Required platform packages are signed/notarized where applicable.
 - [ ] Core Host source is public/buildable.
 - [ ] Complete core workflow works with no Lazarus account/server.
-- [ ] `hostd` and `runnerd` have explicit compatibility/reconcile behavior.
+- [ ] `hostd` owns PTY/process supervision; unexpected Host death produces explicit interrupted state and provider-aware recovery.
 - [ ] Host updates support resume, integrity/signature verification, health check, and rollback.
 - [ ] At least Claude Code, Codex, OpenCode, an OpenAI-compatible API adapter, and OpenRouter are supported or clearly capability-probed.
 - [ ] Provider CLI versions are probed and compatibility-tested.
 - [ ] Fake-provider and golden-fixture contract suites exist.
 - [ ] Tasks survive Desktop/Host restarts.
-- [ ] Compatible supervised processes reconcile after Host restart.
+- [ ] Supported providers can explicitly resume/restart interrupted sessions; unsupported cases fail visibly without invented recovery.
 - [ ] Canonical Agent history is durable.
 - [ ] Checkpoint/resume/fork/rewind semantics are implemented.
 - [ ] Provider switching preserves Lazarus-owned context.
@@ -4814,12 +4882,12 @@ Lazarus local 1.0 is ready only if all are true:
 - [ ] Container isolation works for supported profiles.
 - [ ] UI distinguishes policy-only execution from enforced isolation.
 - [ ] Code indexing is incremental and resource-bounded.
-- [ ] Quick/Plan/Phases/Epic/Review/Autopilot exist.
+- [ ] Planning/review/critique/walkthrough skills exist on the common Task surface; Autopilot is not a 1.0 requirement.
 - [ ] Artifacts are revisioned locally and exportable as Markdown/open formats.
 - [ ] Artifact traceability links requirements → tickets → commits/tests/evidence.
 - [ ] Agent-to-agent mailboxes are durable.
 - [ ] A2A states distinguish persisted/delivered/consumed/acknowledged.
-- [ ] Workflow DAG supports dependency scheduling, retry, pause, cancel, and resume.
+- [ ] Supervised parent/child agents can run concurrently in isolated worktrees; automatic DAG scheduling is not a 1.0 requirement.
 - [ ] Parallel-write collision detection exists.
 - [ ] Verification gates are evidence-based.
 - [ ] Independent review is available.
@@ -4830,7 +4898,7 @@ Lazarus local 1.0 is ready only if all are true:
 - [ ] Secrets use OS keychain/broker.
 - [ ] Secret access and unrestricted network egress are separately controlled.
 - [ ] Prompt-injection/secret-exfiltration adversarial tests pass.
-- [ ] Plugin/provider packages have compatibility and signature/trust handling.
+- [ ] Provider adapters and local skills have version/compatibility metadata; broad plugin signing is not a 1.0 requirement.
 - [ ] Local audit events are inspectable/exportable.
 - [ ] No Lazarus telemetry upload occurs by default.
 - [ ] Protocol compatibility tests run in CI.
@@ -4954,13 +5022,11 @@ pnpm init
 pnpm add -D nx typescript prettier eslint
 
 cargo new crates/host --bin
-cargo new crates/runnerd --bin
 cargo new crates/cli --bin
 
 mkdir -p apps/desktop
 mkdir -p packages/{ui,app-core,protocol-ts,workflow-sdk,provider-sdk,artifact-sdk,config,test-fixtures}
 mkdir -p provider-packs
-mkdir -p proto
 mkdir -p docs/{adr,architecture,protocol,security,product,runbooks}
 mkdir -p scripts
 mkdir -p .github/workflows
@@ -4969,16 +5035,15 @@ mkdir -p .github/workflows
 Then immediately:
 
 1. initialize Tauri Desktop;
-2. initialize Protobuf/Buf;
-3. create `System.Health` protocol;
+2. initialize the TypeScript/Zod protocol registry and Rust code generation;
+3. create `system.health` protocol;
 4. make Desktop call local Host;
 5. make CLI call local Host;
-6. make Host call `runnerd`;
-7. add CI;
-8. add SQLite migrations;
-9. add local data-directory conventions;
-10. add signed-update development manifest;
-11. only then begin workspace/Git features.
+6. add CI;
+7. add SQLite migrations;
+8. add local data-directory conventions;
+9. add signed-update development manifest;
+10. only then begin workspace/Git features.
 
 Do **not** create web apps, services, cloud infrastructure, Kubernetes, Terraform, sync databases, or remote-runner projects.
 
@@ -4989,14 +5054,14 @@ Do **not** create web apps, services, cloud infrastructure, Kubernetes, Terrafor
 1. Repository bootstrap.
 2. CI format/lint/test.
 3. ADR template.
-4. Protobuf build.
-5. Handshake schema.
+4. Protocol schema fingerprint/codegen build.
+5. Per-method handshake manifest.
 6. Rust Host loopback server.
 7. Local Host auth token.
 8. SQLite migration layer.
 9. Host structured logging.
 10. Host singleton lock.
-11. `runnerd` process-supervisor skeleton + reconcile RPC.
+11. Host PTY/process-supervisor skeleton.
 12. CLI `host status`.
 13. Desktop Tauri bootstrap.
 14. Desktop Host connection.
@@ -5056,7 +5121,7 @@ If a question is not applicable, explicitly say why.
 
 1. Tauri vs Electron.
 2. Rust Host.
-3. `hostd` vs `runnerd` process boundary.
+3. Single-Host process supervision and the evidence threshold for a future split.
 4. Local IPC transport.
 5. Protocol choice.
 6. Protocol versioning.
@@ -5124,7 +5189,7 @@ A user opens a large TypeScript + Rust monorepo and optionally imports a GitHub 
 25. Repair agent patches it.
 26. Targeted test fails before repair and passes afterward.
 27. Full required verification passes.
-28. Restart `hostd`; persisted Task/workflow state and compatible `runnerd` processes reconcile correctly.
+28. Restart `hostd`; persisted Task/workflow state recovers and interrupted processes are reported with provider-supported resume/restart actions.
 29. Evidence matrix becomes complete.
 30. User reviews attributed diff and findings.
 31. User chooses local merge/cherry-pick or explicit push/PR creation.
@@ -5310,7 +5375,6 @@ Index.*
 Permission.*
 Tool.*
 Mcp.*
-Runner.*
 Diagnostics.*
 ```
 
@@ -5352,8 +5416,7 @@ Use this order for the current local build:
 2. protocol;
 3. SQLite persistence;
 4. `hostd`;
-5. `runnerd`;
-6. Desktop shell;
+5. Desktop shell;
 7. workspace/file tree;
 8. Git status/diff;
 9. worktrees;
@@ -5366,10 +5429,10 @@ Use this order for the current local build:
 16. artifacts;
 17. planning workflows;
 18. local A2A;
-19. DAG scheduler;
+19. supervised parallel-agent integration;
 20. verification;
 21. review/repair;
-22. Autopilot;
+22. 1.x: DAG scheduler and Autopilot;
 23. direct GitHub integration;
 24. extension/provider packages;
 25. local security hardening;
@@ -5526,7 +5589,7 @@ A provider pack cannot grant itself permissions. Core Lazarus policy remains aut
 For a solo implementation, follow this order and do not parallelize major architectural layers prematurely:
 
 1. repository + protocol + `hostd` + SQLite;
-2. `runnerd` + terminal/process survival;
+2. Host-owned terminal/process supervision;
 3. Tauri shell + workspace/file tree;
 4. Git status/diff/worktrees;
 5. fake provider;
@@ -5541,10 +5604,10 @@ For a solo implementation, follow this order and do not parallelize major archit
 14. A2A mailbox + scheduler;
 15. parallel worktrees + integration;
 16. Review + repair;
-17. Autopilot with strict budgets;
+17. supervised parallel worktrees and integration;
 18. **run Vertical Slice D until reliable**;
 19. direct GitHub/GitLab-style local integrations;
-20. provider/plugin SDK;
+20. 1.x: provider/plugin SDK and Autopilot;
 21. local security hardening;
 22. performance/storage/chaos hardening;
 23. signed distribution + upgrade/rollback matrix;

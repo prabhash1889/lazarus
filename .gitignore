@@ -30,5 +30,6 @@ Thumbs.db
 !.vscode/extensions.json
 
 # Planning docs
-LAZARUS_INITIAL_PLAN.md
+# LAZARUS_INITIAL_PLAN.md
 lazarus-plan.html
+graphify-out/
