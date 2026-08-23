@@ -9,9 +9,17 @@ publish = false
 
 [dependencies]
 anyhow.workspace = true
+prost.workspace = true
+prost-types.workspace = true
+protocol-rs = { path = "../protocol-rs" }
 tokio.workspace = true
+tokio-stream = "0.1"
+tonic.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 
 [lints]
 workspace = true
