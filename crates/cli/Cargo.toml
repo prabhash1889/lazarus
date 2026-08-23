@@ -8,7 +8,11 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+anyhow.workspace = true
 clap.workspace = true
+protocol-rs = { path = "../protocol-rs" }
+tonic.workspace = true
+tokio.workspace = true
 
 [lints]
 workspace = true
