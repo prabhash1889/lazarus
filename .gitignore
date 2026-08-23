@@ -28,3 +28,7 @@ Thumbs.db
 .idea/
 .vscode/*
 !.vscode/extensions.json
+
+# Planning docs
+LAZARUS_INITIAL_PLAN.md
+lazarus-plan.html
