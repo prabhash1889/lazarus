@@ -4,12 +4,17 @@
   "type": "module",
   "scripts": {
     "build": "tsc --noEmit",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --test \"src/**/*.test.ts\"",
+    "gen:bindings": "node ../../scripts/generate-protocol-bindings.mjs",
+    "check:bindings": "node ../../scripts/generate-protocol-bindings.mjs --check",
+    "release:contract": "node ../../scripts/generate-protocol-bindings.mjs --update-released-contract"
   },
   "dependencies": {
-    "@bufbuild/protobuf": "2.14.0"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@types/node": "^24.3.1",
     "typescript": "5.9.3"
   }
 }

@@ -6,7 +6,7 @@ Do not open a public issue for security problems.
 
 This new repository does not yet have a monitored private reporting channel. Maintainers must configure and publish one before the first public release. Until then, contact a maintainer privately and include:
 
-- affected component (Desktop, `lazarus-hostd`, `lazarus-runnerd`, CLI, provider pack, docs/policy);
+- affected component (Desktop, `lazarus-hostd`, CLI, provider pack, docs/policy);
 - platform and versions;
 - reproduction steps or proof of concept;
 - impact assessment.
@@ -19,7 +19,7 @@ In scope:
 
 - anything that lets local code escape the declared isolation model (worktree/container boundaries);
 - bypassing permission profiles, secrets broker, or trust-class rules;
-- Host/runner IPC authentication weaknesses (loopback socket/pipe, token handling);
+- Host IPC authentication weaknesses (loopback socket/pipe, token handling);
 - secret leakage into SQLite, logs, exports, transcripts, or provider payloads beyond policy;
 - update/installer signature verification bypass;
 - prompt-injection escalation: repository/tool/external content overriding user or security policy.

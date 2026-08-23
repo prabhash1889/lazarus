@@ -1,134 +1,232 @@
-//! Bounded in-memory event stream backing `SubscribeEvents` (Phase 1 scope:
-//! live delivery plus replay of the retained window; nothing durable).
+//! Server-sent event delivery backing `GET /system/events` (Phase 1.5
+//! scope: an outage tombstone plus an authoritative snapshot on every
+//! subscription, then live sequenced frames; nothing is retained or
+//! replayed, so lagging subscribers are disconnected and resubscribe).
 
-use std::collections::VecDeque;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use protocol_rs::envelope::{Envelope, ReconnectToken};
+use serde::Serialize;
 use tokio::sync::broadcast;
 
 const BROADCAST_CAPACITY: usize = 1024;
 
-static NEXT_BUS_ID: AtomicU64 = AtomicU64::new(1);
+static NEXT_OUTAGE_ID: AtomicU64 = AtomicU64::new(1);
 
-fn generate_stream_id() -> String {
-    let id = NEXT_BUS_ID.fetch_add(1, Ordering::Relaxed);
+fn generate_outage_id() -> String {
+    let id = NEXT_OUTAGE_ID.fetch_add(1, Ordering::Relaxed);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or_default();
-    format!("bus-{nanos:x}-{id}")
+    format!("outage-{nanos:x}-{id}")
 }
 
-/// Publishes sequenced [`Envelope`]s to live subscribers and retains the most
-/// recent `capacity` frames so reconnect tokens can resume within a window.
+/// A minimal workspace summary carried in a snapshot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct WorkspaceSummary {
+    pub id: String,
+    pub name: String,
+}
+
+/// A minimal task summary carried in a snapshot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TaskSummary {
+    pub id: String,
+    pub workspace_id: String,
+    pub title: String,
+}
+
+/// The JSON frame shapes delivered over the SSE stream.
+///
+/// Every subscription starts with [`EventFrame::Outage`] (unless the client
+/// proves it already knows about this exact outage) and an authoritative
+/// [`EventFrame::Snapshot`], after which only [`EventFrame::Live`] frames
+/// flow. There is no replay: a client that falls behind is disconnected and
+/// must resubscribe for a fresh snapshot.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum EventFrame {
+    /// Marks the start of the current Host incarnation; clients compare it
+    /// against the last outage they observed to detect a Host restart.
+    Outage { outage_id: String },
+    /// The authoritative current state; clients replace everything they
+    /// know with it.
+    Snapshot {
+        workspaces: Vec<WorkspaceSummary>,
+        tasks: Vec<TaskSummary>,
+    },
+    /// A live sequenced change since the snapshot.
+    Live { sequence: u64 },
+}
+
+impl EventFrame {
+    /// The restart tombstone for this bus's incarnation.
+    pub(crate) fn tombstone(outage_id: &str) -> Self {
+        Self::Outage {
+            outage_id: outage_id.to_owned(),
+        }
+    }
+
+    /// The authoritative snapshot; Phase 1 state is empty.
+    pub(crate) fn authoritative_snapshot() -> Self {
+        Self::Snapshot {
+            workspaces: Vec::new(),
+            tasks: Vec::new(),
+        }
+    }
+
+    pub(crate) fn encode(&self) -> String {
+        serde_json::to_string(self).expect("event frame serializes")
+    }
+}
+
+/// Publishes live sequenced [`EventFrame`]s to subscribers and identifies
+/// the current Host incarnation with a stable outage id.
 pub struct EventBus {
-    stream_id: String,
-    capacity: usize,
+    outage_id: String,
+    /// Next live sequence number to assign.
     next_sequence: AtomicU64,
-    tx: broadcast::Sender<Envelope>,
-    history: Mutex<VecDeque<Envelope>>,
+    tx: broadcast::Sender<EventFrame>,
 }
 
 impl EventBus {
-    pub fn new(capacity: usize) -> Self {
-        let (tx, _) = broadcast::channel(BROADCAST_CAPACITY);
+    pub fn new() -> Self {
+        Self::with_broadcast_capacity(BROADCAST_CAPACITY)
+    }
+
+    pub fn with_event_capacity(capacity: usize) -> Self {
+        Self::with_broadcast_capacity(capacity.max(1))
+    }
+
+    fn with_broadcast_capacity(capacity: usize) -> Self {
+        let (tx, _) = broadcast::channel(capacity);
         Self {
-            stream_id: generate_stream_id(),
-            capacity: capacity.max(1),
+            outage_id: generate_outage_id(),
             next_sequence: AtomicU64::new(1),
             tx,
-            history: Mutex::new(VecDeque::new()),
         }
     }
 
-    /// Identifier stamped onto every envelope this bus publishes; reconnect
-    /// tokens must reference it to be resumable.
-    pub fn stream_id(&self) -> &str {
-        &self.stream_id
+    /// Identifier of the current Host incarnation; stable until the Host
+    /// process restarts, which mints a fresh one.
+    pub fn outage_id(&self) -> &str {
+        &self.outage_id
     }
 
-    /// Publishes one envelope, assigning its sequence and stream id.
-    pub fn publish(&self, payload_type: &str, payload: &[u8]) -> Envelope {
-        let sequence = self.next_sequence.fetch_add(1, Ordering::SeqCst);
-        let envelope = Envelope {
-            message_id: format!("{}/{}", self.stream_id, sequence),
-            stream_id: Some(self.stream_id.clone()),
-            sequence: Some(sequence),
-            timestamp: Some(prost_types::Timestamp::from(SystemTime::now())),
-            payload_type: payload_type.to_owned(),
-            payload: payload.to_vec(),
-            ..Envelope::default()
-        };
-        {
-            let mut history = self.history.lock().expect("event history lock");
-            history.push_back(envelope.clone());
-            while history.len() > self.capacity {
-                history.pop_front();
-            }
-        }
-        let _ = self.tx.send(envelope.clone());
-        envelope
-    }
-
-    /// Subscribes to live envelopes published after this call.
-    pub fn subscribe(&self) -> broadcast::Receiver<Envelope> {
+    /// Subscribes to live frames published after this call. The Phase 1
+    /// snapshot is empty and live frames carry no state payload, so every
+    /// queued frame must be delivered exactly once; nothing is skipped and
+    /// nothing is replayed.
+    pub fn subscribe(&self) -> broadcast::Receiver<EventFrame> {
         self.tx.subscribe()
     }
 
-    /// Resolves which retained envelopes follow `token.last_sequence`.
-    ///
-    /// Returns an error reason when replay is impossible (expired or
-    /// malformed token, unknown stream, or sequences evicted from the buffer);
-    /// callers surface that as ERROR_CODE_STREAM_GAP.
-    pub fn resume(&self, token: &ReconnectToken) -> Result<Resume, String> {
-        if !token.usable_at(SystemTime::now()) {
-            return Err("reconnect token is expired or has no expiry".to_owned());
-        }
-        if token.stream_id != self.stream_id {
-            return Err("reconnect token references an unknown event stream".to_owned());
-        }
-        let next_sequence = self.next_sequence.load(Ordering::SeqCst);
-        let oldest_retained = {
-            let history = self.history.lock().expect("event history lock");
-            history
-                .front()
-                .and_then(|envelope| envelope.sequence)
-                .unwrap_or(next_sequence)
-        };
-        let requested_sequence = token
-            .last_sequence
-            .checked_add(1)
-            .ok_or_else(|| "reconnect token sequence overflows".to_owned())?;
-        if requested_sequence < oldest_retained {
-            return Err(format!(
-                "events before sequence {oldest_retained} are no longer retained"
-            ));
-        }
-        if token.last_sequence >= next_sequence {
-            return Err(format!(
-                "reconnect token references unpublished sequence {}",
-                token.last_sequence
-            ));
-        }
-        let history = self.history.lock().expect("event history lock");
-        Ok(Resume {
-            envelopes: history
-                .iter()
-                .filter(|envelope| {
-                    envelope
-                        .sequence
-                        .is_some_and(|seq| seq > token.last_sequence)
-                })
-                .cloned()
-                .collect(),
-        })
+    /// Publishes one live frame with the next sequence number. Phase 1
+    /// carries no payload, so there is no state change to apply.
+    pub fn publish(&self) -> EventFrame {
+        let sequence = self.next_sequence.fetch_add(1, Ordering::Relaxed);
+        let frame = EventFrame::Live { sequence };
+        let _ = self.tx.send(frame.clone());
+        frame
     }
 }
 
-/// Retained envelopes that should be replayed before live delivery resumes.
-pub struct Resume {
-    pub envelopes: Vec<Envelope>,
+impl Default for EventBus {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Decides whether a reconnecting client still needs the current tombstone:
+/// it is skipped only when the client names this exact outage as its last
+/// observed one. Any other value (missing, stale, unknown) replays it.
+pub(crate) fn needs_tombstone(last_outage_id: Option<&str>, current: &str) -> bool {
+    last_outage_id != Some(current)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn publish_assigns_increasing_sequences() {
+        let bus = EventBus::new();
+        let first = bus.publish();
+        let second = bus.publish();
+        assert_eq!(first, EventFrame::Live { sequence: 1 });
+        assert_eq!(second, EventFrame::Live { sequence: 2 });
+    }
+
+    #[test]
+    fn subscribers_receive_live_frames() {
+        let bus = EventBus::new();
+        let mut rx = bus.subscribe();
+        bus.publish();
+        assert_eq!(
+            rx.try_recv().expect("live frame"),
+            EventFrame::Live { sequence: 1 }
+        );
+    }
+
+    #[test]
+    fn tombstone_dedupe_only_for_exact_current_outage() {
+        assert!(!needs_tombstone(Some("outage-a"), "outage-a"));
+        assert!(needs_tombstone(None, "outage-a"));
+        assert!(needs_tombstone(Some("outage-old"), "outage-a"));
+    }
+
+    #[test]
+    fn frames_serialize_with_camel_case_shapes() {
+        let tombstone = EventFrame::tombstone("outage-1");
+        assert_eq!(
+            tombstone.encode(),
+            r#"{"type":"outage","outageId":"outage-1"}"#
+        );
+        let snapshot = EventFrame::authoritative_snapshot();
+        assert_eq!(
+            snapshot.encode(),
+            r#"{"type":"snapshot","workspaces":[],"tasks":[]}"#
+        );
+        assert_eq!(
+            EventFrame::Live { sequence: 7 }.encode(),
+            r#"{"type":"live","sequence":7}"#
+        );
+    }
+
+    #[test]
+    fn each_bus_mints_a_distinct_outage_id() {
+        let first = EventBus::new();
+        let second = EventBus::new();
+        assert_ne!(first.outage_id(), second.outage_id());
+        assert_eq!(first.outage_id(), first.outage_id());
+    }
+
+    #[test]
+    fn frames_published_before_the_subscription_are_not_replayed() {
+        let bus = EventBus::new();
+        bus.publish();
+        let mut rx = bus.subscribe();
+        assert!(
+            rx.try_recv().is_err(),
+            "no replay of pre-subscription frames"
+        );
+    }
+
+    #[test]
+    fn a_lagged_receiver_observes_lag_instead_of_unbounded_buffering() {
+        let bus = EventBus::with_event_capacity(2);
+        let mut rx = bus.subscribe();
+        for _ in 0..4 {
+            bus.publish();
+        }
+        assert!(matches!(
+            rx.try_recv(),
+            Err(broadcast::error::TryRecvError::Lagged(_))
+        ));
+    }
 }

@@ -2,7 +2,7 @@
 
 Lazarus is a local-first, multi-agent, spec-driven software engineering control plane. It orchestrates coding agents (Claude Code, Codex, OpenCode, generic CLIs, and model APIs) on your own machine: gathering repository context, clarifying intent, producing durable specs and tickets, routing work to agents in isolated Git worktrees or containers, verifying results with deterministic gates plus independent AI review, and preserving task knowledge locally.
 
-There is no Lazarus cloud backend. Everything - Desktop, local Host (`lazarus-hostd`), process supervisor (`lazarus-runnerd`), SQLite persistence, Git/worktree engine, verification, permissions, and audit history - runs locally. The product works fully without a Lazarus account or server.
+There is no Lazarus cloud backend. Everything - Desktop, local Host (`lazarus-hostd`, which also owns PTYs and agent child processes), SQLite persistence, Git/worktree engine, verification, permissions, and audit history - runs locally. The product works fully without a Lazarus account or server.
 
 ## Core loop
 
@@ -19,7 +19,13 @@ Intent -> gather local context -> clarify -> durable specs/artifacts
 
 ## Status
 
-Phase 0 (product contract and engineering foundations) per `LAZARUS_INITIAL_PLAN.md`: foundational desktop/host/runner/CLI shells plus the documentation and policy set under `docs/`.
+Phase 1.5 foundation realignment per `LAZARUS_INITIAL_PLAN.md`: the Desktop and CLI authenticate to the loopback Host, exchange per-method manifests, and display Host health without Protobuf, a global protocol version, or a separate runner daemon.
+
+### Current local transport
+
+Phase 1.5 uses loopback-only Axum JSON/HTTP for `/system/info`, `/system/health`, `/workspaces`, and `/tasks`, plus SSE at `/system/events`. This is the current local transport, not a permanent 1.0 transport commitment.
+
+Host, CLI, and Desktop share the per-install `LAZARUS_LOCAL_TOKEN`. Every request sends it as `Authorization: Bearer <token>` and includes the complete `x-lazarus-manifest`; every successful response returns the Host manifest. Streaming recovery uses an outage tombstone, `x-lazarus-last-outage-id` deduplication, an authoritative snapshot on every subscription, and resubscription after lag. Gate failures use typed JSON errors, including `INCOMPATIBLE_METHOD_MANIFEST`.
 
 ## Development
 
@@ -37,14 +43,13 @@ pnpm run ci
 
 ## Planned components
 
-| Component         | Role                                                                                  |
-| ----------------- | ------------------------------------------------------------------------------------- |
-| Tauri Desktop     | UI shell; owns no durable state                                                       |
-| `lazarus-hostd`   | Local source of truth: tasks, agents, artifacts, workflows, verification, permissions |
-| `lazarus-runnerd` | Small process supervisor: PTYs, agent child processes, reconciliation                 |
-| Lazarus CLI       | Full core workflow parity without the GUI                                             |
-| SQLite (WAL)      | Local persistence; append-only events + materialized views                            |
-| Provider packs    | Versioned adapters for CLI and API-backed agents                                      |
+| Component       | Role                                                                                                                |
+| --------------- | ------------------------------------------------------------------------------------------------------------------- |
+| Tauri Desktop   | UI shell; owns no durable state                                                                                     |
+| `lazarus-hostd` | Local source of truth: tasks, agents, artifacts, workflows, verification, permissions, plus PTY/process supervision |
+| Lazarus CLI     | Full core workflow parity without the GUI                                                                           |
+| SQLite (WAL)    | Local persistence; append-only events + materialized views                                                          |
+| Provider packs  | Versioned adapters for CLI and API-backed agents                                                                    |
 
 ## Documentation
 
@@ -52,7 +57,7 @@ pnpm run ci
 - `docs/architecture/invariants.md` - non-negotiable system invariants
 - `docs/adr/0001-architecture.md` - foundational architecture decisions
 - `docs/security/threat-model.md`, `docs/security/execution-isolation.md`, `docs/security/trust-classes.md`, `docs/security/privacy-principles.md`
-- `docs/protocol/compatibility.md` - versioning rules for Desktop/CLI/Host/runner
+- `docs/protocol/compatibility.md` - versioning rules for Desktop/CLI/Host
 
 ## Contributing
 

@@ -2,7 +2,6 @@
 resolver = "2"
 members = [
     "crates/host",
-    "crates/runnerd",
     "crates/cli",
     "crates/protocol-rs",
     "apps/desktop/src-tauri",
@@ -16,20 +15,16 @@ rust-version = "1.96"
 
 [workspace.dependencies]
 anyhow = "1"
-prost = "0.14"
-prost-types = "0.14"
-tonic = "0.14"
-tonic-prost = "0.14"
+axum = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4", features = ["derive"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 tauri = "2"
 tauri-build = "2"
-# Codegen-only (used by protocol-rs build script).
-protoc-bin-vendored = "3"
-prost-build = "0.14"
-tonic-prost-build = "0.14"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

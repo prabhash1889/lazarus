@@ -17,9 +17,9 @@ These are non-negotiable properties of Lazarus. Code reviews and design decision
 
 ## 3. Process boundaries
 
-- INV-8: `lazarus-runnerd` owns processes/PTYs and nothing else - no task truth, planning, provider routing, or artifact state.
-- INV-9: Host restarts/upgrades must not needlessly terminate compatible supervised processes; runners reconcile against Host state after restart.
-- INV-10: Desktop/CLI communicate with the Host only through the versioned Lazarus Protocol, never via shared in-process state.
+- INV-8: `lazarus-hostd` owns PTYs and agent child processes directly (process groups / Windows Job Objects, bounded replay, resource accounting). No separate runner daemon exists; no other component supervises agent processes.
+- INV-9: After an unexpected Host death, Host-owned child processes are marked interrupted. They may be resumed/restarted only where the provider supports it, and interruption is always visible to the user.
+- INV-10: Desktop/CLI communicate with the Host only through the versioned Lazarus Protocol with per-method `{major, minor}` manifests, never via shared in-process state and never via a single global protocol version.
 
 ## 4. Provider neutrality
 
@@ -46,12 +46,20 @@ These are non-negotiable properties of Lazarus. Code reviews and design decision
 
 ## 8. Compatibility and evolution
 
-- INV-22: Wire protocol versions, persistence schema versions, artifact format versions, and provider-pack API versions evolve independently, each under its declared compatibility rules (`docs/protocol/compatibility.md`).
-- INV-23: Additive changes are backward-compatible within a major version; unknown fields are ignored; removed identifiers/field numbers are never reused.
-- INV-24: Distributed features are not pre-built. Only small documented seams (stable IDs, versioned formats/protocols) exist to avoid future lock-in.
+- INV-22: RPC versions (per-method `{major, minor}`), persistence record versions, SQLite migration numbers, artifact format versions, and package semver evolve independently; none may be used as the currency of another. Compatibility rules: `docs/protocol/compatibility.md`.
+- INV-23: The protocol contract source of truth is the TypeScript/Zod protocol package. JSON Schema fingerprints and generated Rust bindings must match it; hand-maintained parallel contracts are forbidden. Additive changes are backward-compatible within a method major version; unknown fields are ignored.
+- INV-24: Streaming recovery uses restart tombstones, resubscription, and authoritative snapshots - not a universal replay envelope or replay-window guarantee. Write RPCs remain idempotent where needed.
+- INV-25: Distributed features are not pre-built. Only small documented seams (stable IDs, versioned formats/protocols) exist to avoid future lock-in.
 
 ## 9. Autonomy bounds
 
-- INV-25: All autonomous execution runs under explicit policy: budgets (time/tokens/cost/tool calls), concurrency caps, allowed providers/directories/network/shell commands, and human-approval gates where configured.
-- INV-26: "The agent says it is done" is never completion evidence. Completion requires deterministic gates and/or independent verification evidence.
-- INV-27: Users can always see why work is running, blocked, retried, or complete.
+- INV-26: All autonomous execution runs under explicit policy: budgets (time/tokens/cost/tool calls), concurrency caps, allowed providers/directories/network/shell commands, and human-approval gates where configured.
+- INV-27: "The agent says it is done" is never completion evidence. Completion requires deterministic gates and/or independent verification evidence.
+- INV-28: Users can always see why work is running, blocked, retried, or complete.
+
+## 10. Product surface parity
+
+- INV-29: One Task aggregate owns chats, terminal agents, artifacts, workspace folders, terminals, files/diffs, and agent lineage. "Epic" is UI/product vocabulary for the same aggregate, never a second engine.
+- INV-30: Exactly four artifact kinds are wire-level built-ins: Spec, Ticket, Story, Review. ADRs, plans, decision logs, and walkthroughs are templates/conventions stored as Specs or Reviews until a real need justifies another kind.
+- INV-31: Planning, review, critique, and walkthrough behavior ships as versioned skills/workflows on the Task surface, not as separate top-level application modes. Autopilot/DAG execution is deferred work, not a current primitive.
+- INV-32: The Host binds to loopback only in local mode. Host, CLI, and Desktop share `LAZARUS_LOCAL_TOKEN`; every request authenticates with `Authorization: Bearer` before manifest negotiation or handler logic.

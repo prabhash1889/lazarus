@@ -11,11 +11,18 @@ export default tseslint.config(
       '**/target/',
       '**/.nx/',
       'apps/desktop/src-tauri/gen/**',
-      'packages/protocol-ts/src/gen/**',
     ],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,
+  {
+    files: ['scripts/**/*.mjs'],
+    languageOptions: {
+      globals: {
+        ...globals.node,
+      },
+    },
+  },
   {
     files: ['**/*.{ts,tsx}'],
     plugins: {

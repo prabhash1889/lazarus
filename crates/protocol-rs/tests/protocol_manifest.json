@@ -1,0 +1,75 @@
+{
+  "manifestFingerprint": "9b2843218d5224684e6fcc9089dd2d3b9ae4b368fce844cfc612d05858a1772c",
+  "methods": [
+    {
+      "name": "system.getInfo",
+      "kind": "unary",
+      "major": 1,
+      "minor": 0,
+      "optional": false,
+      "fallback": null,
+      "requestFingerprint": "93ab7499dc3c616f8db8780fed0d9f69270803cda913882ad2ef3943db8d7225",
+      "responseFingerprint": "07dedac11947172fe27a313fe993236d4ef5c8b750384dee0a7eeb8ca78d2174"
+    },
+    {
+      "name": "system.health",
+      "kind": "unary",
+      "major": 1,
+      "minor": 0,
+      "optional": false,
+      "fallback": null,
+      "requestFingerprint": "93ab7499dc3c616f8db8780fed0d9f69270803cda913882ad2ef3943db8d7225",
+      "responseFingerprint": "c3de975c21db849a1fd07c2110d5719416b6148d2f76938314c9f21b17a675b2"
+    },
+    {
+      "name": "system.subscribeEvents",
+      "kind": "serverStreaming",
+      "major": 1,
+      "minor": 0,
+      "optional": false,
+      "fallback": null,
+      "requestFingerprint": "93ab7499dc3c616f8db8780fed0d9f69270803cda913882ad2ef3943db8d7225",
+      "responseFingerprint": "da7f478a78a2588a466b3af3e61c6e00a8259e4fc31ec3a5f655525fb97e728e"
+    },
+    {
+      "name": "task.list",
+      "kind": "unary",
+      "major": 1,
+      "minor": 2,
+      "optional": false,
+      "fallback": null,
+      "requestFingerprint": "90612587a3c742d829518ac8ece6e29ee0f409ee8df95a04537ed01d5e0e7405",
+      "responseFingerprint": "0a11e49d0b1087bb8f99f85d22ae68b727fa91b58e1361d0b781f028bdee1c9e"
+    },
+    {
+      "name": "workspace.list",
+      "kind": "unary",
+      "major": 1,
+      "minor": 0,
+      "optional": false,
+      "fallback": null,
+      "requestFingerprint": "90612587a3c742d829518ac8ece6e29ee0f409ee8df95a04537ed01d5e0e7405",
+      "responseFingerprint": "d31af4ef4776c62b095b7c02bc368cd841da3f659ae95b1ad13706d07d2aeb4d"
+    }
+  ],
+  "releasedFloor": [
+    "system.getInfo",
+    "system.health",
+    "system.subscribeEvents",
+    "task.list",
+    "workspace.list"
+  ],
+  "bridges": [
+    {
+      "name": "task.list",
+      "olderMinor": 0,
+      "newerMinor": 2,
+      "steps": [
+        {
+          "op": "omitResponseFields",
+          "fields": ["servedAtUnixMs"]
+        }
+      ]
+    }
+  ]
+}

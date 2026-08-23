@@ -1,6 +1,44 @@
-export * from './gen/common_pb.js';
-export * from './gen/handshake_pb.js';
-export * from './gen/system_pb.js';
-export * from './gen/workspace_pb.js';
-export * from './gen/task_pb.js';
-export { IDEMPOTENCY_KEY_HEADER, PROTOCOL_VERSION } from './version.js';
+export { IDEMPOTENCY_KEY_HEADER } from './version.ts';
+
+// The TypeScript/Zod contract registry: the single source of truth for the
+// Lazarus Protocol. JSON Schema fingerprints and the generated Rust bindings
+// (crates/protocol-rs/src/generated_registry.rs) are derived from it.
+export {
+  METHODS,
+  snapshotMethod,
+  snapshotManifest,
+  methodByName,
+  assertRegistryInvariants,
+  canonicalJson,
+  jsonSchemaOf,
+  sha256Hex,
+  fingerprintSchema,
+  isFingerprint,
+  isSchemaBackwardCompatible,
+  validateMethodTransition,
+  validateManifestTransition,
+  declareBridge,
+  findBridge,
+  bridgeFor,
+  isInteroperable,
+  resolveMethodSupport,
+  RELEASED_FLOOR,
+  releasedFloorGaps,
+  releasedFloorSnapshot,
+  PERSISTENCE_REGISTRY_NAMESPACE,
+  PERSISTENCE_RECORDS,
+  snapshotPersistenceRegistry,
+} from './registry/index.ts';
+export type {
+  MethodVersion,
+  MethodKind,
+  MethodSupport,
+  MethodDefinition,
+  MethodSnapshot,
+  ManifestSnapshot,
+  CompatibilityViolation,
+  MethodBridge,
+  PersistenceRecordDefinition,
+  PersistenceRecordSnapshot,
+  PersistenceRegistrySnapshot,
+} from './registry/index.ts';

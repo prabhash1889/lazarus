@@ -1,0 +1,263 @@
+{
+  "$comment": "Frozen released-contract baseline: the method contracts as of the last intentional release. Generation and CI validate the candidate registry against this file; it is never rewritten by normal generation. Move it explicitly with: pnpm --filter @lazarus/protocol-ts release:contract",
+  "manifestFingerprint": "9b2843218d5224684e6fcc9089dd2d3b9ae4b368fce844cfc612d05858a1772c",
+  "methods": [
+    {
+      "name": "system.health",
+      "version": {
+        "major": 1,
+        "minor": 0
+      },
+      "requestSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {},
+        "type": "object"
+      },
+      "responseSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "status": {
+            "enum": ["SERVING", "NOT_SERVING"],
+            "type": "string"
+          }
+        },
+        "required": ["status"],
+        "type": "object"
+      }
+    },
+    {
+      "name": "system.subscribeEvents",
+      "version": {
+        "major": 1,
+        "minor": 0
+      },
+      "requestSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {},
+        "type": "object"
+      },
+      "responseSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "properties": {
+              "outageId": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "type": {
+                "const": "outage",
+                "type": "string"
+              }
+            },
+            "required": ["type", "outageId"],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "tasks": {
+                "items": {
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "workspaceId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": ["id", "workspaceId", "title"],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "type": {
+                "const": "snapshot",
+                "type": "string"
+              },
+              "workspaces": {
+                "items": {
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    }
+                  },
+                  "required": ["id", "name"],
+                  "type": "object"
+                },
+                "type": "array"
+              }
+            },
+            "required": ["type", "workspaces", "tasks"],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "sequence": {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": {
+                "const": "live",
+                "type": "string"
+              }
+            },
+            "required": ["type", "sequence"],
+            "type": "object"
+          }
+        ]
+      }
+    },
+    {
+      "name": "system.getInfo",
+      "version": {
+        "major": 1,
+        "minor": 0
+      },
+      "requestSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {},
+        "type": "object"
+      },
+      "responseSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "capabilities": {
+            "additionalProperties": {
+              "type": "boolean"
+            },
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "hostVersion": {
+            "type": "string"
+          }
+        },
+        "required": ["hostVersion", "capabilities"],
+        "type": "object"
+      }
+    },
+    {
+      "name": "workspace.list",
+      "version": {
+        "major": 1,
+        "minor": 0
+      },
+      "requestSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "cursor": {
+            "type": "string"
+          },
+          "pageSize": {
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "responseSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "pagination": {
+            "properties": {
+              "nextCursor": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "workspaces": {
+            "items": {
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": ["id", "name", "path"],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": ["workspaces"],
+        "type": "object"
+      }
+    },
+    {
+      "name": "task.list",
+      "version": {
+        "major": 1,
+        "minor": 2
+      },
+      "requestSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "cursor": {
+            "type": "string"
+          },
+          "pageSize": {
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "responseSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "pagination": {
+            "properties": {
+              "nextCursor": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "servedAtUnixMs": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "tasks": {
+            "items": {
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "status": {
+                  "enum": ["PENDING", "RUNNING", "COMPLETED", "FAILED", "CANCELLED"],
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                }
+              },
+              "required": ["id", "title", "status"],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": ["tasks"],
+        "type": "object"
+      }
+    }
+  ]
+}

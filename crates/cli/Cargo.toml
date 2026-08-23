@@ -11,7 +11,9 @@ publish = false
 anyhow.workspace = true
 clap.workspace = true
 protocol-rs = { path = "../protocol-rs" }
-tonic.workspace = true
+reqwest.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
 tokio.workspace = true
 
 [lints]

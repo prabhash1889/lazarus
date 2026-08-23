@@ -1,238 +1,762 @@
-//! End-to-end Phase 1 contract check against an in-process Host server.
+//! End-to-end Phase 1.5 contract check against an in-process Axum Host
+//! server over real loopback HTTP.
 
 use std::net::SocketAddr;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{Duration, SystemTime};
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
-use lazarus_hostd::{HostServices, HostState};
-use prost_types::Timestamp;
-use protocol_rs::envelope::{ProtocolVersion, ReconnectToken};
-use protocol_rs::error::ErrorCode;
-use protocol_rs::generated::{
-    HealthRequest, ListTasksRequest, ListWorkspacesRequest, SubscribeEventsRequest,
-    system_service_client::SystemServiceClient, task_service_client::TaskServiceClient,
-    workspace_service_client::WorkspaceServiceClient,
+use lazarus_hostd::{HostServices, HostState, LAST_OUTAGE_HEADER};
+use protocol_rs::auth::{self, bearer_header};
+use protocol_rs::manifest::{
+    MANIFEST_METADATA_KEY, MethodManifest, host_manifest, host_manifest_encoded,
 };
-use protocol_rs::handshake::{ClientHello, error_from_status};
-use protocol_rs::{
-    SystemServiceServer, TaskServiceServer, WorkspaceServiceServer, generated::ServingStatus,
-};
-use tokio::net::TcpListener;
-use tokio_stream::wrappers::TcpListenerStream;
-use tonic::transport::{Endpoint, Server};
-use tonic::{Code, Request};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
+
+const TEST_TOKEN: &str = "integration-test-token";
+const READ_TIMEOUT: Duration = Duration::from_secs(10);
 
 async fn spawn_host() -> (SocketAddr, Arc<HostState>) {
-    let listener = TcpListener::bind("127.0.0.1:0")
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind loopback");
     let addr = listener.local_addr().expect("local addr");
     let state = Arc::new(HostState::with_event_capacity(64));
-    let services = HostServices::new(state.clone());
+    let services = HostServices::new(state.clone(), Arc::from(TEST_TOKEN));
+    let app = lazarus_hostd::build_router(services);
     tokio::spawn(async move {
-        Server::builder()
-            .add_service(SystemServiceServer::new(services.clone()))
-            .add_service(WorkspaceServiceServer::new(services.clone()))
-            .add_service(TaskServiceServer::new(services))
-            .serve_with_incoming(TcpListenerStream::new(listener))
-            .await
-            .expect("host server runs");
+        axum::serve(listener, app).await.expect("host server runs");
     });
     (addr, state)
 }
 
-fn hello(major: i32, minor: i32) -> ClientHello {
-    ClientHello {
-        client: "integration-test".to_owned(),
-        client_version: "0.1.0".to_owned(),
-        protocol: Some(ProtocolVersion { major, minor }),
-        supported_features: vec!["events".to_owned()],
-        auth: None,
+struct HttpResponse {
+    status: u16,
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
+}
+
+impl HttpResponse {
+    fn header(&self, name: &str) -> Option<&str> {
+        let name = name.to_ascii_lowercase();
+        self.headers
+            .iter()
+            .find(|(key, _)| *key == name)
+            .map(|(_, value)| value.as_str())
+    }
+
+    fn body_json(&self) -> serde_json::Value {
+        serde_json::from_slice(&self.body).expect("JSON body")
     }
 }
 
-fn reconnect_token(
-    stream_id: String,
-    last_sequence: u64,
-    expires_in: Duration,
-) -> SubscribeEventsRequest {
-    SubscribeEventsRequest {
-        reconnect: Some(ReconnectToken {
-            token: "t".to_owned(),
-            stream_id,
-            last_sequence,
-            expires_at: Some(Timestamp::from(SystemTime::now() + expires_in)),
-        }),
-    }
-}
-
-async fn next_envelope<S>(stream: &mut S) -> protocol_rs::generated::Envelope
-where
-    S: tokio_stream::Stream<Item = Result<protocol_rs::generated::Envelope, tonic::Status>> + Unpin,
-{
-    use tokio_stream::StreamExt;
-    tokio::time::timeout(Duration::from_secs(5), stream.next())
+/// Issues a raw HTTP/1.1 GET with optional `Authorization` and manifest
+/// headers and reads the full response (the request closes the connection).
+async fn get(
+    addr: SocketAddr,
+    path: &str,
+    authorization: Option<&str>,
+    manifest: Option<&str>,
+) -> HttpResponse {
+    let mut stream = tokio::net::TcpStream::connect(addr)
         .await
-        .expect("event arrives before timeout")
-        .expect("stream stays healthy")
-        .expect("stream yields an envelope")
+        .expect("connect to host");
+    let mut request = format!("GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n");
+    if let Some(auth) = authorization {
+        request.push_str(&format!("{}: {auth}\r\n", auth::AUTH_METADATA_KEY));
+    }
+    if let Some(manifest) = manifest {
+        request.push_str(&format!("{MANIFEST_METADATA_KEY}: {manifest}\r\n"));
+    }
+    request.push_str("\r\n");
+
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .expect("write request");
+    let mut raw = Vec::new();
+    stream.read_to_end(&mut raw).await.expect("read response");
+    parse_response(&raw)
+}
+
+fn parse_response(raw: &[u8]) -> HttpResponse {
+    let head_end = raw
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .expect("HTTP response has a header terminator");
+    let head = std::str::from_utf8(&raw[..head_end]).expect("response head is ASCII");
+    let mut lines = head.split("\r\n");
+    let status_line = lines.next().expect("status line");
+    let status: u16 = status_line
+        .split_whitespace()
+        .nth(1)
+        .expect("status code")
+        .parse()
+        .expect("numeric status code");
+    let mut headers = Vec::new();
+    for line in lines {
+        if let Some((name, value)) = line.split_once(':') {
+            headers.push((name.trim().to_ascii_lowercase(), value.trim().to_owned()));
+        }
+    }
+    HttpResponse {
+        status,
+        headers,
+        body: raw[head_end + 4..].to_vec(),
+    }
+}
+
+fn valid_auth_header() -> &'static str {
+    static BEARER: OnceLock<String> = OnceLock::new();
+    BEARER.get_or_init(|| bearer_header(TEST_TOKEN))
+}
+
+/// A fully authenticated request whose manifest matches this Host exactly.
+async fn get_authed(addr: SocketAddr, path: &str) -> HttpResponse {
+    get(
+        addr,
+        path,
+        Some(valid_auth_header()),
+        Some(host_manifest_encoded()),
+    )
+    .await
+}
+
+/// A peer manifest equal to the Host's except for any overridden entries.
+fn peer_manifest(entries: &[(String, u32, u32)]) -> String {
+    let mut manifest = MethodManifest::default();
+    for (name, major, minor) in entries {
+        manifest
+            .try_insert(name.clone(), *major, *minor)
+            .expect("test entry");
+    }
+    manifest.to_string()
+}
+
+fn full_floor_entries() -> Vec<(String, u32, u32)> {
+    host_manifest()
+        .iter()
+        .map(|(name, version)| (name.clone(), version.major, version.minor))
+        .collect()
+}
+
+fn assert_advertises_host_manifest(response: &HttpResponse) {
+    let advertised: MethodManifest = response
+        .header(MANIFEST_METADATA_KEY)
+        .unwrap_or_else(|| panic!("response advertises the host manifest"))
+        .parse()
+        .expect("decodable manifest");
+    assert_eq!(advertised, host_manifest());
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn phase1_contract_end_to_end() {
-    let (addr, state) = spawn_host().await;
-    let channel = Endpoint::from_shared(format!("http://{addr}"))
-        .expect("valid endpoint")
-        .connect()
-        .await
-        .expect("connect to host");
-    let mut system = SystemServiceClient::new(channel.clone());
-    let mut workspaces = WorkspaceServiceClient::new(channel.clone());
-    let mut tasks = TaskServiceClient::new(channel);
+async fn phase15_unary_contract_end_to_end() {
+    let (addr, _state) = spawn_host().await;
 
-    // Negotiation succeeds within the same major and intersects capabilities.
-    let reply = system
-        .negotiate(Request::new(hello(1, 9)))
-        .await
-        .expect("negotiation succeeds")
-        .into_inner();
-    assert_eq!(reply.negotiated_minor, 0);
-    assert_eq!(reply.protocol, Some(ProtocolVersion { major: 1, minor: 0 }));
-    assert_eq!(reply.capabilities.get("events"), Some(&true));
+    // Health reports SERVING and advertises the complete Host manifest.
+    let health = get_authed(addr, "/system/health").await;
+    assert_eq!(health.status, 200);
+    assert_advertises_host_manifest(&health);
+    assert_eq!(health.body_json()["status"], "SERVING");
 
-    // Differing majors are rejected with the structured error contract.
-    let rejected = system
-        .negotiate(Request::new(hello(2, 0)))
-        .await
-        .expect_err("major mismatch must fail");
-    assert_eq!(rejected.code(), Code::FailedPrecondition);
-    let detail = error_from_status(&rejected).expect("structured error in details");
-    assert_eq!(detail.code(), ErrorCode::UnsupportedProtocolVersion);
-
-    // Health reports SERVING.
-    let health = system
-        .health(Request::new(HealthRequest {}))
-        .await
-        .expect("health responds")
-        .into_inner();
-    assert_eq!(health.status(), ServingStatus::Serving);
-
-    // Both list endpoints answer with empty stub pages.
-    let page = workspaces
-        .list(Request::new(ListWorkspacesRequest::default()))
-        .await
-        .expect("workspace list responds")
-        .into_inner();
-    assert!(page.workspaces.is_empty());
-    assert!(page.pagination.is_none());
-    let page = tasks
-        .list(Request::new(ListTasksRequest::default()))
-        .await
-        .expect("task list responds")
-        .into_inner();
-    assert!(page.tasks.is_empty());
-    assert!(page.pagination.is_none());
-
-    // Event stream: pre-subscribe events are not delivered; live events are.
-    let _before_subscribe = state.bus.publish("test.before", b"skipped");
-    let mut events = system
-        .subscribe_events(Request::new(SubscribeEventsRequest::default()))
-        .await
-        .expect("subscribe succeeds")
-        .into_inner();
-    let first = state.bus.publish("test.live", b"live-1");
-    let received = next_envelope(&mut events).await;
-    assert_eq!(received.sequence, first.sequence);
-
-    // Cancellation is transport-level: dropping the RPC frees the stream and
-    // the host keeps serving.
-    drop(events);
-    let health = system
-        .health(Request::new(HealthRequest {}))
-        .await
-        .expect("host still healthy after client cancels stream")
-        .into_inner();
-    assert_eq!(health.status(), ServingStatus::Serving);
-
-    // A valid reconnect token resumes past the last acknowledged sequence.
-    let stream_id = state.bus.stream_id().to_owned();
-    let mut resumed = system
-        .subscribe_events(Request::new(reconnect_token(
-            stream_id.clone(),
-            first.sequence.expect("sequence assigned"),
-            Duration::from_secs(60),
-        )))
-        .await
-        .expect("resume succeeds")
-        .into_inner();
-    let second = state.bus.publish("test.live", b"live-2");
-    let received = next_envelope(&mut resumed).await;
-    assert_eq!(received.sequence, second.sequence);
-
-    // Expired tokens cannot replay: ERROR_CODE_STREAM_GAP.
-    let rejected = system
-        .subscribe_events(Request::new(reconnect_token(
-            stream_id.clone(),
-            second.sequence.unwrap(),
-            Duration::from_secs(0),
-        )))
-        .await
-        .expect_err("expired token must fail");
-    assert_eq!(rejected.code(), Code::FailedPrecondition);
+    // System info exposes the Host version and capabilities.
+    let info = get_authed(addr, "/system/info").await;
+    assert_eq!(info.status, 200);
+    assert_advertises_host_manifest(&info);
+    let info_body = info.body_json();
     assert_eq!(
-        error_from_status(&rejected)
-            .expect("structured error")
-            .code(),
-        ErrorCode::StreamGap
+        info_body["hostVersion"],
+        env!("CARGO_PKG_VERSION").to_string()
     );
+    assert_eq!(info_body["capabilities"]["events"], true);
 
-    // Sequences evicted from the bounded buffer are unreplayable: STREAM_GAP.
-    for _ in 0..128 {
-        state.bus.publish("test.fill", b"fill");
+    // Both list endpoints answer with empty stub pages and their manifest.
+    let workspaces = get_authed(addr, "/workspaces").await;
+    assert_eq!(workspaces.status, 200);
+    assert_advertises_host_manifest(&workspaces);
+    assert_eq!(workspaces.body_json()["workspaces"], serde_json::json!([]));
+
+    let tasks = get_authed(addr, "/tasks").await;
+    assert_eq!(tasks.status, 200);
+    assert_advertises_host_manifest(&tasks);
+    assert_eq!(tasks.body_json()["tasks"], serde_json::json!([]));
+
+    // Unknown routes are a plain 404 without leaking internals.
+    let unknown = get(
+        addr,
+        "/nope",
+        Some(valid_auth_header()),
+        Some(host_manifest_encoded()),
+    )
+    .await;
+    assert_eq!(unknown.status, 404);
+}
+
+/// Missing, malformed, and wrong bearer credentials are rejected with a
+/// typed UNAUTHENTICATED body before any logic runs; the correct token
+/// passes everywhere.
+#[tokio::test(flavor = "multi_thread")]
+async fn rejects_bad_or_missing_auth() {
+    let (addr, _state) = spawn_host().await;
+
+    for (path, authorization) in [
+        ("/system/health", None),
+        ("/system/health", Some("Bearer not-the-token")),
+        ("/system/health", Some(TEST_TOKEN)),
+        ("/workspaces", None),
+        ("/tasks", Some("Bearer not-the-token")),
+    ] {
+        let rejected = get(addr, path, authorization, Some(host_manifest_encoded())).await;
+        assert_eq!(rejected.status, 401, "{path} must reject {authorization:?}");
+        let body = rejected.body_json();
+        assert_eq!(body["code"], "UNAUTHENTICATED");
+        let message = body["message"].as_str().expect("string message");
+        assert!(!message.contains(TEST_TOKEN), "must never echo the token");
     }
-    let rejected = system
-        .subscribe_events(Request::new(reconnect_token(
-            stream_id.clone(),
-            0,
-            Duration::from_secs(60),
-        )))
-        .await
-        .expect_err("evicted replay window must fail");
-    assert_eq!(
-        error_from_status(&rejected)
-            .expect("structured error")
-            .code(),
-        ErrorCode::StreamGap
+
+    // The valid token gets through everywhere.
+    for path in ["/system/health", "/system/info", "/workspaces", "/tasks"] {
+        let ok = get_authed(addr, path).await;
+        assert_eq!(ok.status, 200, "{path} accepts the valid token");
+    }
+}
+
+/// Unknown routes never answer an unauthenticated caller (a bare 404 would
+/// be a discovery oracle): missing and wrong credentials get the same typed
+/// UNAUTHENTICATED rejection with a constant body that never echoes the
+/// token. A valid caller probing an unknown path gets the router's plain
+/// 404 with no method manifest demanded of it.
+#[tokio::test(flavor = "multi_thread")]
+async fn unknown_routes_require_auth_but_not_a_manifest() {
+    let (addr, _state) = spawn_host().await;
+
+    for authorization in [None, Some("Bearer not-the-token"), Some(TEST_TOKEN)] {
+        let rejected = get(addr, "/nope", authorization, None).await;
+        assert_eq!(rejected.status, 401, "{authorization:?} must be rejected");
+        let body = rejected.body_json();
+        assert_eq!(body["code"], "UNAUTHENTICATED");
+        assert_eq!(
+            body["message"], "missing or invalid local token",
+            "the rejection body stays constant"
+        );
+        let message = body["message"].as_str().expect("string message");
+        assert!(!message.contains(TEST_TOKEN), "must never echo the token");
+    }
+
+    // Authenticated but manifest-less: still a plain 404, not
+    // INVALID_ARGUMENT, with no typed gate code in the body.
+    let not_found = get(addr, "/nope", Some(valid_auth_header()), None).await;
+    assert_eq!(not_found.status, 404);
+    assert!(
+        serde_json::from_slice::<serde_json::Value>(&not_found.body).is_err(),
+        "an unknown route answers plain, without a typed gate body"
+    );
+}
+
+/// The per-method manifest is mandatory on every endpoint: missing or
+/// malformed manifests are typed INVALID_ARGUMENT (400).
+#[tokio::test(flavor = "multi_thread")]
+async fn requires_a_negotiable_request_manifest() {
+    let (addr, _state) = spawn_host().await;
+
+    // Authenticated but no manifest header at all.
+    let rejected = get(addr, "/system/health", Some(valid_auth_header()), None).await;
+    assert_eq!(rejected.status, 400);
+    assert_eq!(rejected.body_json()["code"], "INVALID_ARGUMENT");
+
+    // Malformed manifest value.
+    let rejected = get(
+        addr,
+        "/system/health",
+        Some(valid_auth_header()),
+        Some("v1:not-an-entry"),
+    )
+    .await;
+    assert_eq!(rejected.status, 400);
+    assert_eq!(rejected.body_json()["code"], "INVALID_ARGUMENT");
+}
+
+/// A required method missing from an otherwise valid manifest fails typed
+/// INCOMPATIBLE_METHOD_MANIFEST (412), naming exactly the missing method.
+#[tokio::test(flavor = "multi_thread")]
+async fn rejects_required_missing_method_naming_only_the_offender() {
+    let (addr, _state) = spawn_host().await;
+
+    let without_task_list: Vec<_> = full_floor_entries()
+        .into_iter()
+        .filter(|(name, _, _)| name != "task.list")
+        .collect();
+    let rejected = get(
+        addr,
+        "/system/health",
+        Some(valid_auth_header()),
+        Some(&peer_manifest(&without_task_list)),
+    )
+    .await;
+    assert_eq!(rejected.status, 412);
+    let body = rejected.body_json();
+    assert_eq!(body["code"], "INCOMPATIBLE_METHOD_MANIFEST");
+    let message = body["message"].as_str().expect("string message");
+    assert!(message.contains("task.list"));
+    assert!(!message.contains("system.health"));
+}
+
+/// A major mismatch on one required method fails without implicating any
+/// compatible method.
+#[tokio::test(flavor = "multi_thread")]
+async fn rejects_major_mismatch_naming_only_the_offender() {
+    let (addr, _state) = spawn_host().await;
+
+    let entries: Vec<(String, u32, u32)> = full_floor_entries()
+        .into_iter()
+        .map(|(name, major, minor)| {
+            if name == "workspace.list" {
+                (name, 2, minor)
+            } else {
+                (name, major, minor)
+            }
+        })
+        .collect();
+    let rejected = get(
+        addr,
+        "/workspaces",
+        Some(valid_auth_header()),
+        Some(&peer_manifest(&entries)),
+    )
+    .await;
+    assert_eq!(rejected.status, 412);
+    let body = rejected.body_json();
+    assert_eq!(body["code"], "INCOMPATIBLE_METHOD_MANIFEST");
+    let message = body["message"].as_str().expect("string message");
+    assert!(message.contains("workspace.list"));
+    assert!(!message.contains("system.health"));
+}
+
+/// Peer-only extras in the manifest are ignored: an otherwise compatible
+/// peer keeps calling every Host endpoint even if it advertises methods this
+/// Host has never heard of.
+#[tokio::test(flavor = "multi_thread")]
+async fn extra_peer_methods_do_not_block_unrelated_endpoints() {
+    let (addr, _state) = spawn_host().await;
+
+    let mut entries = full_floor_entries();
+    entries.push(("future.clientOnly".to_owned(), 9, 9));
+    let manifest = peer_manifest(&entries);
+
+    let page = get(addr, "/tasks", Some(valid_auth_header()), Some(&manifest)).await;
+    assert_eq!(page.status, 200);
+    assert_advertises_host_manifest(&page);
+    assert_eq!(page.body_json()["tasks"], serde_json::json!([]));
+
+    let info = get(
+        addr,
+        "/system/info",
+        Some(valid_auth_header()),
+        Some(&manifest),
+    )
+    .await;
+    assert_eq!(info.status, 200);
+    assert_advertises_host_manifest(&info);
+}
+
+/// A peer advertising `task.list` at the bridged older minor 1.0
+/// interoperates end to end, and the declared bridge actually executes: the
+/// v1.1+ additive `servedAtUnixMs` field is stripped from the response. The
+/// same endpoint keeps serving the full shape to current-minor peers.
+#[tokio::test(flavor = "multi_thread")]
+async fn bridged_older_minor_interoperates_through_executed_adaptation() {
+    let (addr, _state) = spawn_host().await;
+
+    let entries: Vec<(String, u32, u32)> = full_floor_entries()
+        .into_iter()
+        .map(|(name, major, minor)| {
+            if name == "task.list" {
+                (name, major, 0)
+            } else {
+                (name, major, minor)
+            }
+        })
+        .collect();
+    let bridged = get(
+        addr,
+        "/tasks",
+        Some(valid_auth_header()),
+        Some(&peer_manifest(&entries)),
+    )
+    .await;
+    assert_eq!(bridged.status, 200);
+    assert_advertises_host_manifest(&bridged);
+    let body = bridged.body_json();
+    assert_eq!(body["tasks"], serde_json::json!([]));
+    assert!(
+        body.get("servedAtUnixMs").is_none(),
+        "the declared 1.0 bridge must strip the additive field: {body}"
     );
 
-    // Client-controlled sequence arithmetic must never overflow the Host.
-    let rejected = system
-        .subscribe_events(Request::new(reconnect_token(
-            stream_id.clone(),
-            u64::MAX,
-            Duration::from_secs(60),
-        )))
-        .await
-        .expect_err("overflowing sequence must fail");
-    assert_eq!(
-        error_from_status(&rejected)
-            .expect("structured error")
-            .code(),
-        ErrorCode::StreamGap
+    // A current-minor peer receives the richer response.
+    let current = get_authed(addr, "/tasks").await;
+    assert_eq!(current.status, 200);
+    assert!(
+        current.body_json().get("servedAtUnixMs").is_some(),
+        "current peers keep the v1.1+ page timestamp"
     );
+}
 
-    // Duplicate idempotency keys run the mutation once through the shared
-    // store the running server itself holds.
-    let executions = AtomicUsize::new(0);
-    let produce = || {
-        executions.fetch_add(1, Ordering::SeqCst);
-        b"response".to_vec()
+/// Minor 1 of `task.list` was never published and has no declared bridge:
+/// a numerically plausible peer advertising it is refused with typed 412,
+/// proving negotiation needs executable adapters, not just numbers.
+#[tokio::test(flavor = "multi_thread")]
+async fn undeclared_older_minor_is_refused_with_412() {
+    let (addr, _state) = spawn_host().await;
+
+    let entries: Vec<(String, u32, u32)> = full_floor_entries()
+        .into_iter()
+        .map(|(name, major, minor)| {
+            if name == "task.list" {
+                (name, major, 1)
+            } else {
+                (name, major, minor)
+            }
+        })
+        .collect();
+    let rejected = get(
+        addr,
+        "/tasks",
+        Some(valid_auth_header()),
+        Some(&peer_manifest(&entries)),
+    )
+    .await;
+    assert_eq!(
+        rejected.status, 412,
+        "an undeclared older minor must fail with 412"
+    );
+    let body = rejected.body_json();
+    assert_eq!(body["code"], "INCOMPATIBLE_METHOD_MANIFEST");
+    let message = body["message"].as_str().expect("string message");
+    assert!(message.contains("task.list"));
+}
+
+/// An open SSE subscription: parsed response head plus the raw stream so
+/// frames can be read incrementally (the stream never ends on its own).
+struct SseSubscription {
+    status: u16,
+    headers: Vec<(String, String)>,
+    stream: TcpStream,
+    buffered: Vec<u8>,
+}
+
+impl SseSubscription {
+    fn header(&self, name: &str) -> Option<&str> {
+        let name = name.to_ascii_lowercase();
+        self.headers
+            .iter()
+            .find(|(key, _)| *key == name)
+            .map(|(_, value)| value.as_str())
+    }
+
+    /// Reads the next `data:` frame as JSON, failing the test if it does not
+    /// arrive within [`READ_TIMEOUT`].
+    async fn next_frame(&mut self) -> serde_json::Value {
+        loop {
+            if let Some(value) = self.pop_buffered_frame() {
+                return value;
+            }
+            let mut chunk = [0u8; 1024];
+            let read = tokio::time::timeout(READ_TIMEOUT, self.stream.read(&mut chunk))
+                .await
+                .expect("frame arrives in time")
+                .expect("stream stays readable");
+            assert!(read > 0, "stream closed before the next frame");
+            self.buffered.extend_from_slice(&chunk[..read]);
+        }
+    }
+
+    fn pop_buffered_frame(&mut self) -> Option<serde_json::Value> {
+        let offset = self
+            .buffered
+            .windows(5)
+            .position(|window| window == b"data:")?;
+        let line_start = offset + 5;
+        let line_end_rel = self.buffered[line_start..]
+            .iter()
+            .position(|b| *b == b'\n')?;
+        let line_end = line_start + line_end_rel;
+        let data: String = std::str::from_utf8(&self.buffered[line_start..line_end])
+            .expect("SSE frame is UTF-8")
+            .trim()
+            .to_owned();
+        self.buffered.drain(..line_end + 1);
+        Some(serde_json::from_str(&data).expect("decodable SSE frame"))
+    }
+
+    /// Waits for the server to close the stream, collecting any trailing
+    /// data frames first.
+    async fn drain_frames_until_eof(mut self) -> Vec<serde_json::Value> {
+        let mut frames = Vec::new();
+        loop {
+            if let Some(value) = self.pop_buffered_frame() {
+                frames.push(value);
+                continue;
+            }
+            let mut chunk = [0u8; 256];
+            let read = tokio::time::timeout(READ_TIMEOUT, self.stream.read(&mut chunk))
+                .await
+                .expect("stream closes in time")
+                .expect("readable until close");
+            if read == 0 {
+                return frames;
+            }
+            self.buffered.extend_from_slice(&chunk[..read]);
+        }
+    }
+}
+
+/// Opens an authenticated SSE subscription with `Connection: close`, so a
+/// finished response is followed by a socket close the client can detect.
+async fn open_sse(addr: SocketAddr, last_outage_id: Option<&str>) -> SseSubscription {
+    let mut stream = TcpStream::connect(addr)
+        .await
+        .expect("connect to host for SSE");
+    let mut request =
+        format!("GET /system/events HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n");
+    request.push_str(&format!(
+        "{}: {}\r\n",
+        auth::AUTH_METADATA_KEY,
+        valid_auth_header()
+    ));
+    request.push_str(&format!(
+        "{MANIFEST_METADATA_KEY}: {}\r\n",
+        host_manifest_encoded()
+    ));
+    if let Some(last_outage_id) = last_outage_id {
+        request.push_str(&format!("{LAST_OUTAGE_HEADER}: {last_outage_id}\r\n"));
+    }
+    request.push_str("\r\n");
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .expect("write SSE request");
+
+    // Read just the response head.
+    let mut buffered = Vec::new();
+    let head_end = loop {
+        if let Some(position) = buffered.windows(4).position(|w| w == b"\r\n\r\n") {
+            break position;
+        }
+        let mut chunk = [0u8; 1024];
+        let read = tokio::time::timeout(READ_TIMEOUT, stream.read(&mut chunk))
+            .await
+            .expect("response head arrives in time")
+            .expect("head is readable");
+        assert!(read > 0, "connection closed before response head");
+        buffered.extend_from_slice(&chunk[..read]);
     };
-    let (first_payload, first_fresh) = state.idempotency.execute("task-create-42", produce);
-    let (second_payload, second_fresh) = state.idempotency.execute("task-create-42", produce);
-    assert!(first_fresh);
-    assert!(!second_fresh);
-    assert_eq!(first_payload, second_payload);
-    assert_eq!(executions.load(Ordering::SeqCst), 1);
+
+    let head = std::str::from_utf8(&buffered[..head_end]).expect("head is ASCII");
+    let status: u16 = head
+        .lines()
+        .next()
+        .expect("status line")
+        .split_whitespace()
+        .nth(1)
+        .expect("status code")
+        .parse()
+        .expect("numeric status code");
+    let headers = head
+        .lines()
+        .skip(1)
+        .filter_map(|line| line.split_once(':'))
+        .map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_owned()))
+        .collect();
+    SseSubscription {
+        status,
+        headers,
+        stream,
+        buffered: buffered[head_end + 4..].to_vec(),
+    }
+}
+
+fn frame_type(frame: &serde_json::Value) -> &str {
+    frame["type"].as_str().expect("typed frame")
+}
+
+/// A fresh subscription always opens with the outage tombstone and an
+/// authoritative snapshot before anything live.
+#[tokio::test(flavor = "multi_thread")]
+async fn sse_first_subscription_sends_tombstone_then_snapshot() {
+    let (addr, state) = spawn_host().await;
+
+    let mut sse = open_sse(addr, None).await;
+    assert_eq!(sse.status, 200);
+
+    let tombstone = sse.next_frame().await;
+    assert_eq!(frame_type(&tombstone), "outage");
+    let outage_id = tombstone["outageId"].as_str().expect("outage id");
+    assert!(!outage_id.is_empty());
+    assert_eq!(outage_id, state.bus.outage_id());
+
+    let snapshot = sse.next_frame().await;
+    assert_eq!(frame_type(&snapshot), "snapshot");
+    assert_eq!(
+        snapshot,
+        serde_json::json!({"type": "snapshot", "workspaces": [], "tasks": []})
+    );
+
+    // The SSE success response advertises this Host's complete manifest.
+    assert_advertises_host_manifest_by_name(&sse);
+}
+
+fn assert_advertises_host_manifest_by_name(sse: &SseSubscription) {
+    let advertised: MethodManifest = sse
+        .header(MANIFEST_METADATA_KEY)
+        .unwrap_or_else(|| panic!("SSE response advertises the host manifest"))
+        .parse()
+        .expect("decodable manifest");
+    assert_eq!(advertised, host_manifest());
+}
+
+/// Reconnecting mid-outage suppresses the tombstone but never the snapshot.
+#[tokio::test(flavor = "multi_thread")]
+async fn sse_same_outage_dedupes_tombstone_but_still_snapshots() {
+    let (addr, _state) = spawn_host().await;
+
+    let mut first = open_sse(addr, None).await;
+    let tombstone = first.next_frame().await;
+    let outage_id = tombstone["outageId"]
+        .as_str()
+        .expect("outage id")
+        .to_owned();
+
+    let mut reconnect = open_sse(addr, Some(&outage_id)).await;
+    let only_frame = reconnect.next_frame().await;
+    assert_eq!(frame_type(&only_frame), "snapshot");
+
+    // An unknown or stale id still gets the current tombstone exactly once.
+    let mut stale = open_sse(addr, Some("outage-from-a-past-life")).await;
+    let tombstone = stale.next_frame().await;
+    assert_eq!(frame_type(&tombstone), "outage");
+    assert_eq!(tombstone["outageId"], outage_id);
+    let snapshot = stale.next_frame().await;
+    assert_eq!(frame_type(&snapshot), "snapshot");
+}
+
+/// Each Host incarnation mints a new stable outage id, and a client that
+/// reports the previous one still receives the fresh tombstone.
+#[tokio::test(flavor = "multi_thread")]
+async fn sse_new_host_outage_produces_new_tombstone() {
+    let (addr_a, _state_a) = spawn_host().await;
+    let (addr_b, state_b) = spawn_host().await;
+
+    let mut sub_a = open_sse(addr_a, None).await;
+    let tombstone_a = sub_a.next_frame().await;
+    let outage_a = tombstone_a["outageId"]
+        .as_str()
+        .expect("outage id")
+        .to_owned();
+
+    assert_ne!(state_b.bus.outage_id(), outage_a, "restart mints a new id");
+
+    let mut sub_b = open_sse(addr_b, Some(&outage_a)).await;
+    let tombstone_b = sub_b.next_frame().await;
+    assert_eq!(frame_type(&tombstone_b), "outage");
+    assert_eq!(tombstone_b["outageId"], state_b.bus.outage_id());
+}
+
+/// Live sequenced events flow after the opening snapshot.
+#[tokio::test(flavor = "multi_thread")]
+async fn sse_live_event_follows_snapshot() {
+    let (addr, state) = spawn_host().await;
+
+    let mut sse = open_sse(addr, None).await;
+    assert_eq!(frame_type(&sse.next_frame().await), "outage");
+    assert_eq!(frame_type(&sse.next_frame().await), "snapshot");
+
+    let published = state.bus.publish();
+    let live = sse.next_frame().await;
+    assert_eq!(live, serde_json::json!({"type": "live", "sequence": 1}));
+    assert_eq!(published, lazarus_hostd::EventFrame::Live { sequence: 1 });
+}
+
+/// Events published before a client subscribes are never replayed: the
+/// broadcast feed only queues frames published from the subscription onward,
+/// so nothing older leaks out ahead of newer live frames.
+#[tokio::test(flavor = "multi_thread")]
+async fn sse_does_not_replay_pre_subscription_events_as_live_frames() {
+    let (addr, state) = spawn_host().await;
+
+    // History that predates the subscription entirely.
+    for _ in 0..3 {
+        state.bus.publish();
+    }
+
+    let mut sse = open_sse(addr, None).await;
+    assert_eq!(frame_type(&sse.next_frame().await), "outage");
+    assert_eq!(frame_type(&sse.next_frame().await), "snapshot");
+
+    // A publish after the subscription is delivered exactly once, and
+    // nothing older leaks out first.
+    state.bus.publish();
+    let live = sse.next_frame().await;
+    assert_eq!(live, serde_json::json!({"type": "live", "sequence": 4}));
+}
+
+/// A subscriber that falls behind is disconnected rather than served skipped
+/// frames; it must resubscribe for a fresh snapshot.
+///
+/// Pinned to a current-thread runtime so the overflow burst below cannot be
+/// drained concurrently by the server task, making the lag deterministic.
+#[tokio::test(flavor = "current_thread")]
+async fn sse_lag_closes_the_stream() {
+    let (addr, state) = spawn_host().await;
+
+    let mut sse = open_sse(addr, None).await;
+    assert_eq!(frame_type(&sse.next_frame().await), "outage");
+    assert_eq!(frame_type(&sse.next_frame().await), "snapshot");
+
+    // Overflow the broadcast buffer without reading any live frames.
+    for _ in 0..=64 {
+        state.bus.publish();
+    }
+
+    // Whatever was delivered, the stream ends instead of continuing.
+    let frames = sse.drain_frames_until_eof().await;
+    assert!(
+        frames.len() <= 66,
+        "no fabricated frames beyond what was published"
+    );
+}
+
+/// `/system/events` sits behind the same transport gate as every unary
+/// endpoint: auth and a negotiable manifest are both mandatory.
+#[tokio::test(flavor = "multi_thread")]
+async fn sse_requires_auth_and_manifest() {
+    let (addr, _state) = spawn_host().await;
+
+    let rejected = get(addr, "/system/events", None, Some(host_manifest_encoded())).await;
+    assert_eq!(rejected.status, 401);
+    assert_eq!(rejected.body_json()["code"], "UNAUTHENTICATED");
+
+    let rejected = get(addr, "/system/events", Some(valid_auth_header()), None).await;
+    assert_eq!(rejected.status, 400);
+    assert_eq!(rejected.body_json()["code"], "INVALID_ARGUMENT");
+
+    // And the method participates in per-method negotiation.
+    let without_events: Vec<_> = full_floor_entries()
+        .into_iter()
+        .filter(|(name, _, _)| name != "system.subscribeEvents")
+        .collect();
+    let rejected = get(
+        addr,
+        "/system/events",
+        Some(valid_auth_header()),
+        Some(&peer_manifest(&without_events)),
+    )
+    .await;
+    assert_eq!(rejected.status, 412);
+    assert!(
+        rejected.body_json()["message"]
+            .as_str()
+            .expect("message")
+            .contains("system.subscribeEvents")
+    );
 }

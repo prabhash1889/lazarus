@@ -5,13 +5,29 @@ interface Capability {
   enabled: boolean;
 }
 
+interface NegotiatedMethod {
+  name: string;
+  version: string | null;
+  fallback: string | null;
+}
+
 interface HostStatus {
   connected: boolean;
-  negotiatedVersion: string | null;
   hostVersion: string | null;
   servingStatus: string | null;
   capabilities: Capability[];
+  methods: NegotiatedMethod[];
   error: string | null;
+}
+
+function methodLabel(method: NegotiatedMethod): string {
+  if (method.version) {
+    return `${method.name}=${method.version}`;
+  }
+  if (method.fallback) {
+    return `${method.name}=>${method.fallback} (fallback)`;
+  }
+  return `${method.name}=unavailable`;
 }
 
 async function fetchHostStatus(): Promise<HostStatus> {
@@ -67,13 +83,23 @@ export function App() {
             <dl className="status-grid">
               <dt>Connection</dt>
               <dd>connected</dd>
-              <dt>Negotiated protocol</dt>
-              <dd>{status.negotiatedVersion ?? 'unknown'}</dd>
               <dt>Host version</dt>
               <dd>{status.hostVersion ?? 'unknown'}</dd>
               <dt>Serving status</dt>
               <dd>{status.servingStatus ?? 'unknown'}</dd>
             </dl>
+            {status.methods.length > 0 ? (
+              <>
+                <h2>Negotiated methods</h2>
+                <ul className="capability-list" aria-label="Negotiated protocol methods">
+                  {status.methods.map((method) => (
+                    <li key={method.name}>
+                      <code>{method.name}</code> - {methodLabel(method)}
+                    </li>
+                  ))}
+                </ul>
+              </>
+            ) : null}
             {status.capabilities.length > 0 ? (
               <>
                 <h2>Capabilities</h2>

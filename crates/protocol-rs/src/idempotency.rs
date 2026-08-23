@@ -1,33 +1,16 @@
-//! Idempotency-key contract for write RPCs (plan section 9.1).
+//! Idempotency-key contract for write methods (plan section 9.1).
 //!
-//! Write RPCs carry a client-chosen idempotency key in gRPC metadata under
-//! [`IDEMPOTENCY_KEY_HEADER`]. Hosts must treat a repeated key as a replay
-//! of the original mutation: return the original response instead of
-//! executing the mutation again. Keys are deliberately metadata, not message
-//! fields, so every write RPC inherits the convention additively.
+//! Write methods carry a client-chosen idempotency key in the request
+//! header [`IDEMPOTENCY_KEY_HEADER`]. Hosts must treat a repeated key as a
+//! replay of the original mutation: return the original response instead of
+//! executing the mutation again. Keys are deliberately headers, not message
+//! fields, so every write method inherits the convention additively.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-/// gRPC metadata header carrying client-chosen idempotency keys.
+/// Request header carrying client-chosen idempotency keys.
 pub const IDEMPOTENCY_KEY_HEADER: &str = "x-lazarus-idempotency-key";
-
-/// Attaches an idempotency key to an outgoing request.
-pub fn attach_idempotency_key<T>(request: &mut tonic::Request<T>, key: impl Into<String>) {
-    let key = key.into();
-    assert!(!key.is_empty(), "idempotency key must not be empty");
-    let value = key.parse().expect("idempotency key is valid header value");
-    request.metadata_mut().insert(IDEMPOTENCY_KEY_HEADER, value);
-}
-
-/// Extracts the idempotency key from an incoming request, if any.
-pub fn extract_idempotency_key<T>(request: &tonic::Request<T>) -> Option<String> {
-    request
-        .metadata()
-        .get(IDEMPOTENCY_KEY_HEADER)
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_owned)
-}
 
 /// Process-local store that executes a mutation at most once per idempotency
 /// key within the host's lifetime. The durable, cross-restart store lives in
@@ -95,24 +78,5 @@ mod tests {
         let (second, second_fresh) = store.execute("b", || vec![2]);
         assert!(first_fresh && second_fresh);
         assert_ne!(first, second);
-    }
-
-    #[test]
-    fn key_travels_through_tonic_metadata() {
-        let mut request = tonic::Request::new(());
-        assert!(extract_idempotency_key(&request).is_none());
-
-        attach_idempotency_key(&mut request, "create-task-42");
-        assert_eq!(
-            extract_idempotency_key(&request).as_deref(),
-            Some("create-task-42")
-        );
-    }
-
-    #[test]
-    #[should_panic(expected = "idempotency key must not be empty")]
-    fn empty_key_is_rejected() {
-        let mut request = tonic::Request::new(());
-        attach_idempotency_key(&mut request, "");
     }
 }
