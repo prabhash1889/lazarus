@@ -11,6 +11,7 @@ export default tseslint.config(
       '**/target/',
       '**/.nx/',
       'apps/desktop/src-tauri/gen/**',
+      'packages/protocol-ts/src/gen/**',
     ],
   },
   js.configs.recommended,

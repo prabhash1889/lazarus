@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package lazarus.protocol.v1;
+
+import "common.proto";
+
+message ListWorkspacesRequest {
+  PaginationRequest pagination = 1;
+}
+
+message WorkspaceSummary {
+  string id = 1;
+  string name = 2;
+  string path = 3;
+}
+
+message ListWorkspacesResponse {
+  repeated WorkspaceSummary workspaces = 1;
+  PaginationResponse pagination = 2;
+}
+
+service WorkspaceService {
+  rpc List(ListWorkspacesRequest) returns (ListWorkspacesResponse);
+}

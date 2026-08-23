@@ -1,0 +1,16 @@
+version: v2
+modules:
+  - path: .
+lint:
+  use:
+    - STANDARD
+  except:
+    # Schemas stay flat under proto/ per the monorepo layout.
+    - PACKAGE_DIRECTORY_MATCH
+    # Request/response types carry their domain prefix (ListTasksRequest,
+    # WorkspaceSummary) and streams reuse Envelope by design.
+    - RPC_REQUEST_STANDARD_NAME
+    - RPC_RESPONSE_STANDARD_NAME
+breaking:
+  use:
+    - FILE

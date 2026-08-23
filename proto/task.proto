@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+package lazarus.protocol.v1;
+
+import "common.proto";
+
+enum TaskStatus {
+  TASK_STATUS_UNSPECIFIED = 0;
+  TASK_STATUS_PENDING = 1;
+  TASK_STATUS_RUNNING = 2;
+  TASK_STATUS_COMPLETED = 3;
+  TASK_STATUS_FAILED = 4;
+  TASK_STATUS_CANCELLED = 5;
+}
+
+message ListTasksRequest {
+  PaginationRequest pagination = 1;
+}
+
+message TaskSummary {
+  string id = 1;
+  string title = 2;
+  TaskStatus status = 3;
+}
+
+message ListTasksResponse {
+  repeated TaskSummary tasks = 1;
+  PaginationResponse pagination = 2;
+}
+
+service TaskService {
+  rpc List(ListTasksRequest) returns (ListTasksResponse);
+}

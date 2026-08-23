@@ -9,6 +9,7 @@
     "bootstrap": "pnpm install --frozen-lockfile && pnpm build",
     "build": "pnpm build:js && cargo build --workspace --locked",
     "build:js": "nx run-many -t build",
+    "gen:protocol": "buf generate",
     "typecheck": "nx run-many -t typecheck",
     "lint:js": "eslint .",
     "lint:rs": "cargo clippy --workspace --all-targets --locked -- -D warnings",
@@ -20,6 +21,8 @@
     "ci": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm build && pnpm test:rs"
   },
   "devDependencies": {
+    "@bufbuild/buf": "1.72.0",
+    "@bufbuild/protoc-gen-es": "2.14.0",
     "@eslint/js": "10.0.1",
     "eslint": "10.9.0",
     "eslint-plugin-react-hooks": "7.1.1",
