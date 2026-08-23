@@ -1,0 +1,9 @@
+node_modules/
+dist/
+coverage/
+target/
+.nx/
+pnpm-lock.yaml
+LAZARUS_INITIAL_PLAN.md
+apps/desktop/src-tauri/gen/
+lazarus-plan.html

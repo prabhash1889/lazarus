@@ -1,0 +1,30 @@
+# Node
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Rust / Cargo
+target/
+**/*.rs.bk
+
+# Nx
+.nx/
+
+# Tauri codegen
+apps/desktop/src-tauri/gen/
+
+# Env and secrets
+.env
+.env.*
+!.env.example
+
+# Logs and OS artifacts
+*.log
+.DS_Store
+Thumbs.db
+
+# Editors
+.idea/
+.vscode/*
+!.vscode/extensions.json

@@ -1,0 +1,33 @@
+{
+  "name": "@lazarus/root",
+  "private": true,
+  "packageManager": "pnpm@9.15.9",
+  "engines": {
+    "node": "24.18.0"
+  },
+  "scripts": {
+    "bootstrap": "pnpm install --frozen-lockfile && pnpm build",
+    "build": "pnpm build:js && cargo build --workspace",
+    "build:js": "nx run-many -t build",
+    "typecheck": "nx run-many -t typecheck",
+    "lint:js": "eslint .",
+    "lint:rs": "cargo clippy --workspace --all-targets -- -D warnings",
+    "lint": "pnpm lint:js && pnpm lint:rs",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "fmt:rs": "cargo fmt --all",
+    "test:rs": "cargo test --workspace",
+    "dev:desktop": "pnpm --filter desktop dev",
+    "ci": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm build && pnpm test:rs"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "eslint": "10.9.0",
+    "eslint-plugin-react-hooks": "7.1.1",
+    "globals": "17.11.0",
+    "nx": "23.1.1",
+    "prettier": "3.9.6",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.67.0"
+  }
+}

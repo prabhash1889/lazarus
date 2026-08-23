@@ -1,0 +1,17 @@
+[package]
+name = "lazarus-hostd"
+description = "Lazarus local Host daemon: the source of truth for tasks, agents, and artifacts."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true
