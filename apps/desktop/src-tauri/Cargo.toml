@@ -11,6 +11,10 @@ publish = false
 tauri-build.workspace = true
 
 [dependencies]
+protocol-rs = { path = "../../../crates/protocol-rs" }
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", default-features = false, features = ["time"] }
+tonic.workspace = true
 tauri.workspace = true
 
 [lints]

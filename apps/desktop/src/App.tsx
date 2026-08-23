@@ -1,9 +1,108 @@
+import { useCallback, useEffect, useState } from 'react';
+
+interface Capability {
+  name: string;
+  enabled: boolean;
+}
+
+interface HostStatus {
+  connected: boolean;
+  negotiatedVersion: string | null;
+  hostVersion: string | null;
+  servingStatus: string | null;
+  capabilities: Capability[];
+  error: string | null;
+}
+
+async function fetchHostStatus(): Promise<HostStatus> {
+  const tauri = window.__TAURI__;
+  if (!tauri) {
+    throw new Error(
+      'Tauri bridge unavailable. Launch the app through the desktop shell (pnpm dev:desktop) instead of a plain browser tab.',
+    );
+  }
+  return tauri.core.invoke<HostStatus>('host_status');
+}
+
 export function App() {
+  const [status, setStatus] = useState<HostStatus | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      setStatus(await fetchHostStatus());
+    } catch (err) {
+      setStatus(null);
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
   return (
     <main className="shell">
       <h1>Lazarus</h1>
       <p>Local-first, multi-agent, spec-driven engineering platform.</p>
-      <p className="muted">Phase 0 shell: desktop UI scaffolding only.</p>
+      <section className="host-status" aria-live="polite" aria-busy={loading}>
+        {loading ? (
+          <p className="muted">Connecting to host at http://127.0.0.1:50051...</p>
+        ) : error ? (
+          <>
+            <p role="alert" className="error">
+              {error}
+            </p>
+            <button type="button" onClick={() => void refresh()}>
+              Retry
+            </button>
+          </>
+        ) : status && status.connected ? (
+          <>
+            <dl className="status-grid">
+              <dt>Connection</dt>
+              <dd>connected</dd>
+              <dt>Negotiated protocol</dt>
+              <dd>{status.negotiatedVersion ?? 'unknown'}</dd>
+              <dt>Host version</dt>
+              <dd>{status.hostVersion ?? 'unknown'}</dd>
+              <dt>Serving status</dt>
+              <dd>{status.servingStatus ?? 'unknown'}</dd>
+            </dl>
+            {status.capabilities.length > 0 ? (
+              <>
+                <h2>Capabilities</h2>
+                <ul className="capability-list">
+                  {status.capabilities.map((capability) => (
+                    <li key={capability.name}>
+                      <code>{capability.name}</code> - {capability.enabled ? 'enabled' : 'disabled'}
+                    </li>
+                  ))}
+                </ul>
+              </>
+            ) : (
+              <p className="muted">No negotiated capabilities.</p>
+            )}
+            <button type="button" onClick={() => void refresh()}>
+              Refresh
+            </button>
+          </>
+        ) : (
+          <>
+            <p role="alert" className="error">
+              {status?.error ?? 'Unknown connection failure.'}
+            </p>
+            <button type="button" onClick={() => void refresh()}>
+              Retry
+            </button>
+          </>
+        )}
+      </section>
     </main>
   );
 }
