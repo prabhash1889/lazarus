@@ -619,6 +619,20 @@ async fn idle_sse_closes_at_the_caller_deadline() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn graceful_shutdown_closes_a_deadline_free_sse_stream() {
+    let (addr, state) = spawn_host().await;
+    let mut sse = open_sse(addr, None).await;
+    assert_eq!(frame_type(&sse.next_frame().await), "outage");
+    assert_eq!(frame_type(&sse.next_frame().await), "snapshot");
+
+    state.begin_shutdown();
+    assert!(
+        sse.drain_frames_until_eof().await.is_empty(),
+        "shutdown closes the idle stream without fabricating frames"
+    );
+}
+
 fn frame_type(frame: &serde_json::Value) -> &str {
     frame["type"].as_str().expect("typed frame")
 }

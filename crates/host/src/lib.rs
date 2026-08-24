@@ -3,12 +3,16 @@
 //! workspaces, tasks) shared by the binary and integration tests.
 
 mod events;
+pub mod logging;
+pub mod persistence;
+pub mod runtime;
 mod services;
 
 use std::collections::HashMap;
 use std::fmt;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub use events::{EventBus, EventFrame, TaskSummary, WorkspaceSummary};
 use protocol_rs::auth::LOCAL_TOKEN_ENV;
@@ -17,6 +21,7 @@ pub use services::{
     GateCode, GateError, HostServices, LAST_OUTAGE_HEADER, authorize_and_negotiate, build_router,
     transport_gate,
 };
+use tokio::sync::broadcast;
 
 /// Why the daemon refused to start serving.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,6 +89,8 @@ pub struct HostState {
     /// Process-local idempotency store shared by all write paths.
     pub idempotency: MemoryIdempotencyStore,
     host_capabilities: HashMap<String, bool>,
+    serving: AtomicBool,
+    shutdown: broadcast::Sender<()>,
 }
 
 impl HostState {
@@ -92,15 +99,31 @@ impl HostState {
     }
 
     pub fn with_event_capacity(event_capacity: usize) -> Self {
+        let (shutdown, _) = broadcast::channel(1);
         Self {
             bus: EventBus::with_event_capacity(event_capacity),
             idempotency: MemoryIdempotencyStore::new(),
             host_capabilities: HashMap::from([("events".to_owned(), true)]),
+            serving: AtomicBool::new(true),
+            shutdown,
         }
     }
 
     pub fn host_capabilities(&self) -> &HashMap<String, bool> {
         &self.host_capabilities
+    }
+
+    pub fn is_serving(&self) -> bool {
+        self.serving.load(Ordering::Acquire)
+    }
+
+    pub fn begin_shutdown(&self) {
+        self.serving.store(false, Ordering::Release);
+        let _ = self.shutdown.send(());
+    }
+
+    pub(crate) fn subscribe_shutdown(&self) -> broadcast::Receiver<()> {
+        self.shutdown.subscribe()
     }
 }
 
@@ -151,5 +174,13 @@ mod tests {
                 .to_string()
                 .contains("s3cret")
         );
+    }
+
+    #[test]
+    fn shutdown_changes_the_runtime_health_state() {
+        let state = HostState::new();
+        assert!(state.is_serving());
+        state.begin_shutdown();
+        assert!(!state.is_serving());
     }
 }

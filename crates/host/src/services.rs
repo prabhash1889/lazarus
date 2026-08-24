@@ -315,9 +315,13 @@ async fn system_info(State(services): State<HostServices>) -> Json<wire::SystemG
     })
 }
 
-async fn health() -> Json<wire::SystemHealthResponse> {
+async fn health(State(services): State<HostServices>) -> Json<wire::SystemHealthResponse> {
     Json(wire::SystemHealthResponse {
-        status: wire::SystemHealthResponseStatus::Serving,
+        status: if services.state.is_serving() {
+            wire::SystemHealthResponseStatus::Serving
+        } else {
+            wire::SystemHealthResponseStatus::NotServing
+        },
     })
 }
 
@@ -384,6 +388,8 @@ struct Subscription {
     /// Direct bounded-broadcast feed with persistent waker state, so a slow
     /// subscriber can never grow memory.
     stream: BroadcastStream<EventFrame>,
+    /// Closes deadline-free streams when the Host starts graceful shutdown.
+    shutdown: Option<BroadcastStream<()>>,
     /// Timer that wakes this stream at the caller deadline even when the
     /// event feed is idle.
     deadline: Option<Pin<Box<tokio::time::Sleep>>>,
@@ -394,6 +400,12 @@ impl Subscription {
     /// frame flows exactly once: the Phase 1 snapshot is empty and frames
     /// carry no state payload, so none can duplicate it.
     fn poll_next_frame(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<EventFrame>> {
+        if let Some(shutdown) = &mut self.shutdown {
+            match Pin::new(shutdown).poll_next(cx) {
+                Poll::Ready(Some(Ok(())) | Some(Err(_)) | None) => return Poll::Ready(None),
+                Poll::Pending => {}
+            }
+        }
         if let Some(timer) = self.deadline.as_mut()
             && timer.as_mut().poll(cx).is_ready()
         {
@@ -454,6 +466,7 @@ async fn system_events(
     Ok(Sse::new(Subscription {
         prefix: prefix.into_iter(),
         stream: BroadcastStream::new(rx),
+        shutdown: Some(BroadcastStream::new(services.state.subscribe_shutdown())),
         deadline,
     }))
 }
@@ -761,6 +774,7 @@ mod tests {
         Subscription {
             prefix: Vec::new().into_iter(),
             stream: BroadcastStream::new(rx),
+            shutdown: None,
             deadline: None,
         }
     }
@@ -821,6 +835,7 @@ mod tests {
             ]
             .into_iter(),
             stream: BroadcastStream::new(rx),
+            shutdown: None,
             deadline: None,
         };
         assert_eq!(
@@ -840,5 +855,19 @@ mod tests {
             None,
             "dropping the bus closes the stream"
         );
+    }
+
+    #[tokio::test]
+    async fn host_shutdown_closes_a_deadline_free_subscription() {
+        let state = crate::HostState::new();
+        let bus = crate::events::EventBus::new();
+        let mut sub = Subscription {
+            prefix: Vec::new().into_iter(),
+            stream: BroadcastStream::new(bus.subscribe()),
+            shutdown: Some(BroadcastStream::new(state.subscribe_shutdown())),
+            deadline: None,
+        };
+        state.begin_shutdown();
+        assert_eq!(next_frame(&mut sub).await, None);
     }
 }
