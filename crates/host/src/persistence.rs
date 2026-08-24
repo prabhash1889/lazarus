@@ -218,6 +218,7 @@ pub struct StoredProcessSpec {
     pub run_mode: String,
     pub data_dir: String,
     pub env_allowlist: Vec<String>,
+    pub next_output_offset: u64,
 }
 
 /// One output frame retained for replay.
@@ -361,7 +362,7 @@ impl Store {
         self.conn
             .query_row(
                 "SELECT id, status, program, args_json, cwd, run_mode,
-                        data_dir, env_allowlist_json
+                        data_dir, env_allowlist_json, next_output_offset
                  FROM supervised_processes WHERE id = ?1",
                 [id],
                 |row| {
@@ -385,6 +386,7 @@ impl Store {
                         run_mode: row.get(5)?,
                         data_dir: row.get(6)?,
                         env_allowlist,
+                        next_output_offset: row.get(8)?,
                     })
                 },
             )
@@ -1291,6 +1293,7 @@ mod tests {
                 run_mode: "PTY".to_owned(),
                 data_dir: "task-123".to_owned(),
                 env_allowlist: vec!["PATH".to_owned(), "HOME".to_owned()],
+                next_output_offset: 0,
             }
         );
         assert_eq!(
@@ -1353,7 +1356,19 @@ mod tests {
         store
             .mark_process_running(interrupted_id, 555)
             .expect("running");
+        store
+            .append_output_frame(interrupted_id, 0, "STDOUT", b"before crash")
+            .expect("append pre-crash output");
         assert_eq!(store.interrupt_active_processes("host died").unwrap(), 1);
+        assert_eq!(
+            store
+                .supervised_process_spec(interrupted_id)
+                .expect("read interrupted spec")
+                .expect("known process")
+                .next_output_offset,
+            1,
+            "resume must continue after the durable output cursor"
+        );
         assert!(
             store
                 .mark_process_resumed(interrupted_id, 333)

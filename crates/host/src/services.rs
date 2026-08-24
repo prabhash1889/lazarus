@@ -573,7 +573,7 @@ async fn start_process(
         let _ = processes.supervisor.stop(&request.process_id).await;
         return Err(error);
     }
-    tokio::spawn(persist_process_events(processes, handle));
+    tokio::spawn(persist_process_events(processes, handle, 0));
 
     Ok(Json(wire::ProcessStartResponse {
         process_id: request.process_id,
@@ -661,9 +661,19 @@ async fn resume_process(
     // The guarded INTERRUPTED -> RUNNING transition is the durability gate:
     // if another caller won the race, stop the duplicate OS process this
     // request just started so nothing runs outside the record.
-    let resumed = lock_process_store(&processes)?
-        .mark_process_resumed(&spec.id, handle.pid())
-        .map_err(process_persistence_error)?;
+    let resume_transition = {
+        let mut store = lock_process_store(&processes)?;
+        store
+            .mark_process_resumed(&spec.id, handle.pid())
+            .map_err(process_persistence_error)
+    };
+    let resumed = match resume_transition {
+        Ok(resumed) => resumed,
+        Err(error) => {
+            let _ = processes.supervisor.stop(&spec.id).await;
+            return Err(error);
+        }
+    };
     if !resumed {
         let _ = processes.supervisor.stop(&spec.id).await;
         return Err(GateError::new(
@@ -671,7 +681,11 @@ async fn resume_process(
             format!("process {} is no longer interrupted", request.process_id),
         ));
     }
-    tokio::spawn(persist_process_events(processes, handle));
+    tokio::spawn(persist_process_events(
+        processes,
+        handle,
+        spec.next_output_offset,
+    ));
 
     Ok(Json(wire::ProcessResumeResponse {
         process_id: request.process_id,
@@ -870,7 +884,11 @@ fn duration_ms(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
-async fn persist_process_events(processes: Arc<ProcessServices>, handle: ProcessHandle) {
+async fn persist_process_events(
+    processes: Arc<ProcessServices>,
+    handle: ProcessHandle,
+    output_offset_base: u64,
+) {
     let mut events = handle.subscribe();
     let mut next_offset = 0;
     loop {
@@ -884,7 +902,12 @@ async fn persist_process_events(processes: Arc<ProcessServices>, handle: Process
                 continue;
             }
             next_offset = frame.offset.saturating_add(1);
-            if let Err(error) = persist_process_frame(&processes, handle.id(), &frame) {
+            if let Err(error) = persist_process_frame(
+                &processes,
+                handle.id(),
+                output_offset_base.saturating_add(frame.offset),
+                &frame,
+            ) {
                 tracing::warn!(component = "hostd", event = "process.output_persist_failed", message = %error.message);
                 return;
             }
@@ -896,7 +919,12 @@ async fn persist_process_events(processes: Arc<ProcessServices>, handle: Process
         match events.recv().await {
             Ok(frame) if frame.offset >= next_offset => {
                 next_offset = frame.offset.saturating_add(1);
-                if let Err(error) = persist_process_frame(&processes, handle.id(), &frame) {
+                if let Err(error) = persist_process_frame(
+                    &processes,
+                    handle.id(),
+                    output_offset_base.saturating_add(frame.offset),
+                    &frame,
+                ) {
                     tracing::warn!(component = "hostd", event = "process.output_persist_failed", message = %error.message);
                     return;
                 }
@@ -937,6 +965,7 @@ fn persist_dropped_output(
 fn persist_process_frame(
     processes: &ProcessServices,
     process_id: &str,
+    seq: u64,
     frame: &FramedEvent,
 ) -> Result<(), GateError> {
     let ProcessEvent::Output { stream, bytes } = &frame.event else {
@@ -948,7 +977,7 @@ fn persist_process_frame(
         OutputStream::Pty => "PTY",
     };
     lock_process_store(processes)?
-        .append_output_frame(process_id, frame.offset, stream, bytes)
+        .append_output_frame(process_id, seq, stream, bytes)
         .map_err(process_persistence_error)
 }
 
