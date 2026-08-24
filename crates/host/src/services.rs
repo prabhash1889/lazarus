@@ -1352,6 +1352,7 @@ mod tests {
         assert_eq!(rpc_method("/process/stop"), Some("process.stop"));
         assert_eq!(rpc_method("/process/list"), Some("process.list"));
         assert_eq!(rpc_method("/process/output"), Some("process.output"));
+        assert_eq!(rpc_method("/process/resume"), Some("process.resume"));
         assert_eq!(rpc_method("/system/shutdown"), Some("system.shutdown"));
         assert_eq!(rpc_method("/unknown"), None);
     }
