@@ -436,7 +436,7 @@ async fn phase25_exit_gate_end_to_end() {
     let deadline = Instant::now() + Duration::from_secs(10);
     let pre_crash_output = loop {
         let page = output_page(&client, &process_id, 0).await;
-        if decoded_output(&page).contains(&marker) {
+        if decoded_output(&page).contains(marker) {
             break page;
         }
         assert!(Instant::now() < deadline, "agent never produced output");
@@ -614,7 +614,7 @@ async fn phase25_exit_gate_end_to_end() {
     // crash replays byte-for-byte after the update and restart.
     let replayed = output_page(&client_two, &process_id, 0).await;
     assert!(
-        decoded_output(&replayed).contains(&marker),
+        decoded_output(&replayed).contains(marker),
         "pre-crash output history survives"
     );
     assert_eq!(
@@ -651,7 +651,7 @@ async fn phase25_exit_gate_end_to_end() {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         let occurrences = decoded_output(&output_page(&client_two, &process_id, 0).await)
-            .matches(&marker)
+            .matches(marker)
             .count();
         if occurrences >= 2 {
             break;
