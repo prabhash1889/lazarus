@@ -31,7 +31,12 @@ fn wait_until_started(child: &mut Child, root: &Path) {
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
         assert!(child.try_wait().expect("read child status").is_none());
-        if root.join("state/lazarus.sqlite3").exists() && root.join("host/running.json").exists() {
+        let marker_matches_child = std::fs::read(root.join("host/running.json"))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            .and_then(|marker| marker["pid"].as_u64())
+            == Some(u64::from(child.id()));
+        if root.join("state/lazarus.sqlite3").exists() && marker_matches_child {
             std::thread::sleep(Duration::from_millis(100));
             return;
         }

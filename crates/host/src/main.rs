@@ -1,13 +1,14 @@
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use lazarus_hostd::logging::init_structured_logging;
 use lazarus_hostd::persistence::Store;
 use lazarus_hostd::runtime::{CrashMarker, DataPaths, InstanceLock};
 use lazarus_hostd::{
     HostServices, HostState, build_router, local_token_from_env, validate_loopback_addr,
 };
+use process_supervisor::{Supervisor, SupervisorConfig};
 use tracing::{info, warn};
 
 const DEFAULT_LISTEN_ADDR: &str = "127.0.0.1:50051";
@@ -32,7 +33,13 @@ async fn main() -> Result<()> {
     let crash_marker = CrashMarker::begin(&paths, env!("CARGO_PKG_VERSION"))
         .context("creating the Host crash marker")?;
     let previous_unclean_shutdown = crash_marker.previous_unclean_shutdown();
-    let store = Store::open(paths.database()).context("opening Host persistence")?;
+    let mut store = Store::open(paths.database()).context("opening Host persistence")?;
+    let supervisor = Supervisor::new(SupervisorConfig::new(paths.state.join("processes")))
+        .context("starting process supervision")?;
+    let previous_supervisor_unclean_shutdown = supervisor.previous_unclean_shutdown();
+    let interrupted_processes = store
+        .interrupt_active_processes("host died")
+        .context("recovering interrupted supervised processes")?;
     store.set_meta(
         "host.previous_unclean_shutdown",
         if previous_unclean_shutdown {
@@ -41,9 +48,23 @@ async fn main() -> Result<()> {
             "false"
         },
     )?;
+    store.set_meta(
+        "process_supervisor.previous_unclean_shutdown",
+        if previous_supervisor_unclean_shutdown {
+            "true"
+        } else {
+            "false"
+        },
+    )?;
 
     let state = Arc::new(HostState::new());
-    let services = HostServices::new(state.clone(), token);
+    let store = Arc::new(Mutex::new(store));
+    let services = HostServices::with_process_supervision(
+        state.clone(),
+        token,
+        store.clone(),
+        supervisor.clone(),
+    );
     let app = build_router(services);
 
     info!(
@@ -51,7 +72,9 @@ async fn main() -> Result<()> {
         event = "host.starting",
         version = env!("CARGO_PKG_VERSION"),
         data_root = %paths.root.display(),
-        previous_unclean_shutdown
+        previous_unclean_shutdown,
+        previous_supervisor_unclean_shutdown,
+        interrupted_processes,
     );
     if previous_unclean_shutdown {
         warn!(
@@ -63,7 +86,10 @@ async fn main() -> Result<()> {
     let listener = tokio::net::TcpListener::bind(listen_addr)
         .await
         .with_context(|| format!("binding {listen_addr}"))?;
-    store.set_meta("host.lifecycle", "running")?;
+    store
+        .lock()
+        .map_err(|_| anyhow!("Host persistence lock is poisoned"))?
+        .set_meta("host.lifecycle", "running")?;
     info!(
         component = "hostd",
         event = "host.listening",
@@ -74,7 +100,18 @@ async fn main() -> Result<()> {
         .with_graceful_shutdown(shutdown_signal(state))
         .await?;
 
+    supervisor
+        .shutdown()
+        .await
+        .context("stopping supervised process trees")?;
+    let mut store = store
+        .lock()
+        .map_err(|_| anyhow!("Host persistence lock is poisoned"))?;
+    store
+        .stop_active_processes()
+        .context("finalizing supervised processes")?;
     store.set_meta("host.lifecycle", "stopped")?;
+    drop(store);
     crash_marker
         .mark_clean()
         .context("removing the Host crash marker")?;

@@ -1,6 +1,46 @@
 {
-  "manifestFingerprint": "9b2843218d5224684e6fcc9089dd2d3b9ae4b368fce844cfc612d05858a1772c",
+  "manifestFingerprint": "c067c87954bc1132ed27ad7b8edc2c114afdc8d7f159f17cce106f7ec906ac00",
   "methods": [
+    {
+      "name": "process.list",
+      "kind": "unary",
+      "major": 1,
+      "minor": 0,
+      "optional": false,
+      "fallback": null,
+      "requestFingerprint": "93ab7499dc3c616f8db8780fed0d9f69270803cda913882ad2ef3943db8d7225",
+      "responseFingerprint": "1073fa6cc305b953180cf3ff793b5c3c5bdf7fbf600a1d49e637e993b3aa427b"
+    },
+    {
+      "name": "process.output",
+      "kind": "unary",
+      "major": 1,
+      "minor": 0,
+      "optional": false,
+      "fallback": null,
+      "requestFingerprint": "9b340e5d34ea0ba220224f82203840743d162cd1a786d9b6cf4565af2b80c7b8",
+      "responseFingerprint": "74ef7acb510bc418a867f511f39f21f3530fc641f378d2225eb1ccd43c5d41a7"
+    },
+    {
+      "name": "process.start",
+      "kind": "unary",
+      "major": 1,
+      "minor": 0,
+      "optional": false,
+      "fallback": null,
+      "requestFingerprint": "8abb284792d2da878b85b52876f796742612e23b8b004fe00af7866b4f22e2f4",
+      "responseFingerprint": "30ac63f7dd3e6f1de9379e7897af0166ea4cb4ca3e2f05146360133ffd0a555f"
+    },
+    {
+      "name": "process.stop",
+      "kind": "unary",
+      "major": 1,
+      "minor": 0,
+      "optional": false,
+      "fallback": null,
+      "requestFingerprint": "f07720476b5e6a97d5e64f0632ca9ce9f11ef41f749a2747fda7fd6a3e6ca186",
+      "responseFingerprint": "30ac63f7dd3e6f1de9379e7897af0166ea4cb4ca3e2f05146360133ffd0a555f"
+    },
     {
       "name": "system.getInfo",
       "kind": "unary",
@@ -53,6 +93,10 @@
     }
   ],
   "releasedFloor": [
+    "process.list",
+    "process.output",
+    "process.start",
+    "process.stop",
     "system.getInfo",
     "system.health",
     "system.subscribeEvents",

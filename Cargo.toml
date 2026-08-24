@@ -5,6 +5,7 @@ members = [
     "crates/cli",
     "crates/protocol-rs",
     "apps/desktop/src-tauri",
+    "crates/process-supervisor",
 ]
 
 [workspace.package]

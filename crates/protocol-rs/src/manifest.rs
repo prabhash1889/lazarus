@@ -612,6 +612,10 @@ mod tests {
     fn required_missing_and_major_mismatch_are_typed_errors() {
         let host = host_manifest();
         let peer = manifest(&[
+            ("process.list", 1, 0),
+            ("process.output", 1, 0),
+            ("process.start", 1, 0),
+            ("process.stop", 1, 0),
             ("system.getInfo", 1, 0),
             ("system.health", 1, 0),
             ("system.subscribeEvents", 1, 0),

@@ -6,6 +6,34 @@
     "retryable": true
   },
   "methods": {
+    "process.list": { "request": {}, "response": [] },
+    "process.output": {
+      "request": {
+        "processId": "0198e550-c9be-7000-8000-000000000001",
+        "offset": 0
+      },
+      "response": { "frames": [], "nextOffset": 0, "truncated": true }
+    },
+    "process.start": {
+      "request": {
+        "processId": "0198e550-c9be-7000-8000-000000000001",
+        "program": "lazarus",
+        "args": [],
+        "runMode": "PIPED",
+        "dataDir": "lazarus"
+      },
+      "response": {
+        "processId": "0198e550-c9be-7000-8000-000000000001",
+        "status": "STARTING"
+      }
+    },
+    "process.stop": {
+      "request": { "processId": "0198e550-c9be-7000-8000-000000000001" },
+      "response": {
+        "processId": "0198e550-c9be-7000-8000-000000000001",
+        "status": "STARTING"
+      }
+    },
     "system.getInfo": {
       "request": {},
       "response": {

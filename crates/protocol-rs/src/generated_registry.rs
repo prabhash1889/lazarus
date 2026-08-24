@@ -43,10 +43,50 @@ pub struct MethodBinding {
 
 /// Manifest fingerprint over all method bindings (see header).
 pub const MANIFEST_FINGERPRINT: &str =
-    "9b2843218d5224684e6fcc9089dd2d3b9ae4b368fce844cfc612d05858a1772c";
+    "c067c87954bc1132ed27ad7b8edc2c114afdc8d7f159f17cce106f7ec906ac00";
 
 /// Generated method bindings, sorted by name.
 pub const METHOD_BINDINGS: &[MethodBinding] = &[
+    MethodBinding {
+        name: "process.list",
+        kind: MethodKind::Unary,
+        major: 1,
+        minor: 0,
+        optional: false,
+        fallback: None,
+        request_fingerprint: "93ab7499dc3c616f8db8780fed0d9f69270803cda913882ad2ef3943db8d7225",
+        response_fingerprint: "1073fa6cc305b953180cf3ff793b5c3c5bdf7fbf600a1d49e637e993b3aa427b",
+    },
+    MethodBinding {
+        name: "process.output",
+        kind: MethodKind::Unary,
+        major: 1,
+        minor: 0,
+        optional: false,
+        fallback: None,
+        request_fingerprint: "9b340e5d34ea0ba220224f82203840743d162cd1a786d9b6cf4565af2b80c7b8",
+        response_fingerprint: "74ef7acb510bc418a867f511f39f21f3530fc641f378d2225eb1ccd43c5d41a7",
+    },
+    MethodBinding {
+        name: "process.start",
+        kind: MethodKind::Unary,
+        major: 1,
+        minor: 0,
+        optional: false,
+        fallback: None,
+        request_fingerprint: "8abb284792d2da878b85b52876f796742612e23b8b004fe00af7866b4f22e2f4",
+        response_fingerprint: "30ac63f7dd3e6f1de9379e7897af0166ea4cb4ca3e2f05146360133ffd0a555f",
+    },
+    MethodBinding {
+        name: "process.stop",
+        kind: MethodKind::Unary,
+        major: 1,
+        minor: 0,
+        optional: false,
+        fallback: None,
+        request_fingerprint: "f07720476b5e6a97d5e64f0632ca9ce9f11ef41f749a2747fda7fd6a3e6ca186",
+        response_fingerprint: "30ac63f7dd3e6f1de9379e7897af0166ea4cb4ca3e2f05146360133ffd0a555f",
+    },
     MethodBinding {
         name: "system.getInfo",
         kind: MethodKind::Unary,
@@ -101,6 +141,10 @@ pub const METHOD_BINDINGS: &[MethodBinding] = &[
 
 /// Frozen released-floor method names every supported Host keeps serving.
 pub const RELEASED_FLOOR: &[&str] = &[
+    "process.list",
+    "process.output",
+    "process.start",
+    "process.stop",
     "system.getInfo",
     "system.health",
     "system.subscribeEvents",
@@ -205,6 +249,21 @@ pub mod wire {
 
     impl std::error::Error for WireDecodeError {}
 
+    fn is_uuid_v7(value: &str) -> bool {
+        let bytes = value.as_bytes();
+        bytes.len() == 36
+            && bytes[8] == b'-'
+            && bytes[13] == b'-'
+            && bytes[14] == b'7'
+            && bytes[18] == b'-'
+            && matches!(bytes[19], b'8' | b'9' | b'a' | b'b' | b'A' | b'B')
+            && bytes[23] == b'-'
+            && bytes
+                .iter()
+                .enumerate()
+                .all(|(index, byte)| matches!(index, 8 | 13 | 18 | 23) || byte.is_ascii_hexdigit())
+    }
+
     /// Major version of the versioned error-envelope contract
     /// (`protocol.error`), frozen in the released-contract baseline like
     /// every method payload.
@@ -297,6 +356,365 @@ pub mod wire {
         let decoded: ProtocolError = serde_json::from_value(value.clone())
             .map_err(|error| WireDecodeError::new("protocol.error", error.to_string()))?;
         Ok(decoded)
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    pub struct ProcessListRequest {}
+
+    impl ProcessListRequest {
+        /// Enforces exactly the constraints carried by the contract schema.
+        pub fn validate(&self) -> Result<(), String> {
+            // No constraints beyond serde's decoding.
+            Ok(())
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    pub struct ProcessListResponseItemResourceCounters {
+        #[serde(rename = "cpuMs", skip_serializing_if = "Option::is_none")]
+        pub cpu_ms: Option<u64>,
+        #[serde(rename = "durationMs", skip_serializing_if = "Option::is_none")]
+        pub duration_ms: Option<u64>,
+        #[serde(rename = "peakMemoryBytes", skip_serializing_if = "Option::is_none")]
+        pub peak_memory_bytes: Option<u64>,
+        #[serde(rename = "stderrBytes")]
+        pub stderr_bytes: u64,
+        #[serde(rename = "stdoutBytes")]
+        pub stdout_bytes: u64,
+    }
+
+    impl ProcessListResponseItemResourceCounters {
+        /// Enforces exactly the constraints carried by the contract schema.
+        pub fn validate(&self) -> Result<(), String> {
+            if self.cpu_ms.as_ref().is_some_and(|v| *v > 9007199254740991) {
+                return Err("cpuMs: must be at most 9007199254740991".to_string());
+            }
+            if self
+                .duration_ms
+                .as_ref()
+                .is_some_and(|v| *v > 9007199254740991)
+            {
+                return Err("durationMs: must be at most 9007199254740991".to_string());
+            }
+            if self
+                .peak_memory_bytes
+                .as_ref()
+                .is_some_and(|v| *v > 9007199254740991)
+            {
+                return Err("peakMemoryBytes: must be at most 9007199254740991".to_string());
+            }
+            let v = &self.stderr_bytes;
+            if *v > 9007199254740991 {
+                return Err("stderrBytes: must be at most 9007199254740991".to_string());
+            }
+            let v = &self.stdout_bytes;
+            if *v > 9007199254740991 {
+                return Err("stdoutBytes: must be at most 9007199254740991".to_string());
+            }
+            Ok(())
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+    pub enum ProcessListResponseItemStatus {
+        #[serde(rename = "STARTING")]
+        Starting,
+        #[serde(rename = "RUNNING")]
+        Running,
+        #[serde(rename = "EXITED")]
+        Exited,
+        #[serde(rename = "STOPPED")]
+        Stopped,
+        #[serde(rename = "INTERRUPTED")]
+        Interrupted,
+    }
+
+    impl ProcessListResponseItemStatus {
+        pub fn as_str(self) -> &'static str {
+            match self {
+                Self::Starting => "STARTING",
+                Self::Running => "RUNNING",
+                Self::Exited => "EXITED",
+                Self::Stopped => "STOPPED",
+                Self::Interrupted => "INTERRUPTED",
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    pub struct ProcessListResponseItem {
+        #[serde(rename = "droppedOutputBytes")]
+        pub dropped_output_bytes: u64,
+        #[serde(rename = "exitCode", skip_serializing_if = "Option::is_none")]
+        pub exit_code: Option<u64>,
+        #[serde(rename = "exitedAt", skip_serializing_if = "Option::is_none")]
+        pub exited_at: Option<String>,
+        #[serde(rename = "processId")]
+        pub process_id: String,
+        #[serde(rename = "resourceCounters")]
+        pub resource_counters: ProcessListResponseItemResourceCounters,
+        #[serde(rename = "startedAt", skip_serializing_if = "Option::is_none")]
+        pub started_at: Option<String>,
+        pub status: ProcessListResponseItemStatus,
+    }
+
+    impl ProcessListResponseItem {
+        /// Enforces exactly the constraints carried by the contract schema.
+        pub fn validate(&self) -> Result<(), String> {
+            let v = &self.dropped_output_bytes;
+            if *v > 9007199254740991 {
+                return Err("droppedOutputBytes: must be at most 9007199254740991".to_string());
+            }
+            if self
+                .exit_code
+                .as_ref()
+                .is_some_and(|v| *v > 9007199254740991)
+            {
+                return Err("exitCode: must be at most 9007199254740991".to_string());
+            }
+            let v = &self.process_id;
+            if !is_uuid_v7(v) {
+                return Err("processId: must be a UUIDv7 string".to_string());
+            }
+            Ok(())
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    pub struct ProcessOutputRequest {
+        pub offset: u64,
+        #[serde(rename = "processId")]
+        pub process_id: String,
+    }
+
+    impl ProcessOutputRequest {
+        /// Enforces exactly the constraints carried by the contract schema.
+        pub fn validate(&self) -> Result<(), String> {
+            let v = &self.offset;
+            if *v > 9007199254740991 {
+                return Err("offset: must be at most 9007199254740991".to_string());
+            }
+            let v = &self.process_id;
+            if !is_uuid_v7(v) {
+                return Err("processId: must be a UUIDv7 string".to_string());
+            }
+            Ok(())
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+    pub enum ProcessOutputResponseFramesItemStream {
+        #[serde(rename = "STDOUT")]
+        Stdout,
+        #[serde(rename = "STDERR")]
+        Stderr,
+        #[serde(rename = "PTY")]
+        Pty,
+    }
+
+    impl ProcessOutputResponseFramesItemStream {
+        pub fn as_str(self) -> &'static str {
+            match self {
+                Self::Stdout => "STDOUT",
+                Self::Stderr => "STDERR",
+                Self::Pty => "PTY",
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    pub struct ProcessOutputResponseFramesItem {
+        pub payload: String,
+        pub seq: u64,
+        pub stream: ProcessOutputResponseFramesItemStream,
+    }
+
+    impl ProcessOutputResponseFramesItem {
+        /// Enforces exactly the constraints carried by the contract schema.
+        pub fn validate(&self) -> Result<(), String> {
+            let v = &self.seq;
+            if *v > 9007199254740991 {
+                return Err("seq: must be at most 9007199254740991".to_string());
+            }
+            Ok(())
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    pub struct ProcessOutputResponse {
+        pub frames: Vec<ProcessOutputResponseFramesItem>,
+        #[serde(rename = "nextOffset")]
+        pub next_offset: u64,
+        pub truncated: bool,
+    }
+
+    impl ProcessOutputResponse {
+        /// Enforces exactly the constraints carried by the contract schema.
+        pub fn validate(&self) -> Result<(), String> {
+            let v = &self.next_offset;
+            if *v > 9007199254740991 {
+                return Err("nextOffset: must be at most 9007199254740991".to_string());
+            }
+            Ok(())
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+    pub enum ProcessStartRequestRunMode {
+        #[serde(rename = "PIPED")]
+        Piped,
+        #[serde(rename = "PTY")]
+        Pty,
+    }
+
+    impl ProcessStartRequestRunMode {
+        pub fn as_str(self) -> &'static str {
+            match self {
+                Self::Piped => "PIPED",
+                Self::Pty => "PTY",
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    pub struct ProcessStartRequest {
+        pub args: Vec<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub cwd: Option<String>,
+        #[serde(rename = "dataDir")]
+        pub data_dir: String,
+        #[serde(rename = "envAllowlist", skip_serializing_if = "Option::is_none")]
+        pub env_allowlist: Option<Vec<String>>,
+        #[serde(rename = "processId")]
+        pub process_id: String,
+        pub program: String,
+        #[serde(rename = "runMode")]
+        pub run_mode: ProcessStartRequestRunMode,
+    }
+
+    impl ProcessStartRequest {
+        /// Enforces exactly the constraints carried by the contract schema.
+        pub fn validate(&self) -> Result<(), String> {
+            let v = &self.process_id;
+            if !is_uuid_v7(v) {
+                return Err("processId: must be a UUIDv7 string".to_string());
+            }
+            Ok(())
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+    pub enum ProcessStartResponseStatus {
+        #[serde(rename = "STARTING")]
+        Starting,
+        #[serde(rename = "RUNNING")]
+        Running,
+        #[serde(rename = "EXITED")]
+        Exited,
+        #[serde(rename = "STOPPED")]
+        Stopped,
+        #[serde(rename = "INTERRUPTED")]
+        Interrupted,
+    }
+
+    impl ProcessStartResponseStatus {
+        pub fn as_str(self) -> &'static str {
+            match self {
+                Self::Starting => "STARTING",
+                Self::Running => "RUNNING",
+                Self::Exited => "EXITED",
+                Self::Stopped => "STOPPED",
+                Self::Interrupted => "INTERRUPTED",
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    pub struct ProcessStartResponse {
+        #[serde(rename = "processId")]
+        pub process_id: String,
+        pub status: ProcessStartResponseStatus,
+    }
+
+    impl ProcessStartResponse {
+        /// Enforces exactly the constraints carried by the contract schema.
+        pub fn validate(&self) -> Result<(), String> {
+            let v = &self.process_id;
+            if !is_uuid_v7(v) {
+                return Err("processId: must be a UUIDv7 string".to_string());
+            }
+            Ok(())
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    pub struct ProcessStopRequest {
+        #[serde(rename = "gracefulTimeoutMs", skip_serializing_if = "Option::is_none")]
+        pub graceful_timeout_ms: Option<u64>,
+        #[serde(rename = "processId")]
+        pub process_id: String,
+    }
+
+    impl ProcessStopRequest {
+        /// Enforces exactly the constraints carried by the contract schema.
+        pub fn validate(&self) -> Result<(), String> {
+            if self
+                .graceful_timeout_ms
+                .as_ref()
+                .is_some_and(|v| *v > 9007199254740991)
+            {
+                return Err("gracefulTimeoutMs: must be at most 9007199254740991".to_string());
+            }
+            let v = &self.process_id;
+            if !is_uuid_v7(v) {
+                return Err("processId: must be a UUIDv7 string".to_string());
+            }
+            Ok(())
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+    pub enum ProcessStopResponseStatus {
+        #[serde(rename = "STARTING")]
+        Starting,
+        #[serde(rename = "RUNNING")]
+        Running,
+        #[serde(rename = "EXITED")]
+        Exited,
+        #[serde(rename = "STOPPED")]
+        Stopped,
+        #[serde(rename = "INTERRUPTED")]
+        Interrupted,
+    }
+
+    impl ProcessStopResponseStatus {
+        pub fn as_str(self) -> &'static str {
+            match self {
+                Self::Starting => "STARTING",
+                Self::Running => "RUNNING",
+                Self::Exited => "EXITED",
+                Self::Stopped => "STOPPED",
+                Self::Interrupted => "INTERRUPTED",
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    pub struct ProcessStopResponse {
+        #[serde(rename = "processId")]
+        pub process_id: String,
+        pub status: ProcessStopResponseStatus,
+    }
+
+    impl ProcessStopResponse {
+        /// Enforces exactly the constraints carried by the contract schema.
+        pub fn validate(&self) -> Result<(), String> {
+            let v = &self.process_id;
+            if !is_uuid_v7(v) {
+                return Err("processId: must be a UUIDv7 string".to_string());
+            }
+            Ok(())
+        }
     }
 
     #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -610,6 +1028,103 @@ pub mod wire {
             Ok(())
         }
     }
+    /// Decodes and validates a `process.list` request payload produced by any peer.
+    pub fn decode_process_list_request(
+        value: &serde_json::Value,
+    ) -> Result<ProcessListRequest, WireDecodeError> {
+        let decoded: ProcessListRequest = serde_json::from_value(value.clone())
+            .map_err(|error| WireDecodeError::new("process.list request", error.to_string()))?;
+        decoded
+            .validate()
+            .map_err(|reason| WireDecodeError::new("process.list request", reason))?;
+        Ok(decoded)
+    }
+
+    /// Decodes and validates a `process.list` response payload produced by any peer.
+    pub fn decode_process_list_response(
+        value: &serde_json::Value,
+    ) -> Result<Vec<ProcessListResponseItem>, WireDecodeError> {
+        let decoded: Vec<ProcessListResponseItem> = serde_json::from_value(value.clone())
+            .map_err(|error| WireDecodeError::new("process.list response", error.to_string()))?;
+        for item in &decoded {
+            item.validate()
+                .map_err(|reason| WireDecodeError::new("process.list response", reason))?;
+        }
+        Ok(decoded)
+    }
+
+    /// Decodes and validates a `process.output` request payload produced by any peer.
+    pub fn decode_process_output_request(
+        value: &serde_json::Value,
+    ) -> Result<ProcessOutputRequest, WireDecodeError> {
+        let decoded: ProcessOutputRequest = serde_json::from_value(value.clone())
+            .map_err(|error| WireDecodeError::new("process.output request", error.to_string()))?;
+        decoded
+            .validate()
+            .map_err(|reason| WireDecodeError::new("process.output request", reason))?;
+        Ok(decoded)
+    }
+
+    /// Decodes and validates a `process.output` response payload produced by any peer.
+    pub fn decode_process_output_response(
+        value: &serde_json::Value,
+    ) -> Result<ProcessOutputResponse, WireDecodeError> {
+        let decoded: ProcessOutputResponse = serde_json::from_value(value.clone())
+            .map_err(|error| WireDecodeError::new("process.output response", error.to_string()))?;
+        decoded
+            .validate()
+            .map_err(|reason| WireDecodeError::new("process.output response", reason))?;
+        Ok(decoded)
+    }
+
+    /// Decodes and validates a `process.start` request payload produced by any peer.
+    pub fn decode_process_start_request(
+        value: &serde_json::Value,
+    ) -> Result<ProcessStartRequest, WireDecodeError> {
+        let decoded: ProcessStartRequest = serde_json::from_value(value.clone())
+            .map_err(|error| WireDecodeError::new("process.start request", error.to_string()))?;
+        decoded
+            .validate()
+            .map_err(|reason| WireDecodeError::new("process.start request", reason))?;
+        Ok(decoded)
+    }
+
+    /// Decodes and validates a `process.start` response payload produced by any peer.
+    pub fn decode_process_start_response(
+        value: &serde_json::Value,
+    ) -> Result<ProcessStartResponse, WireDecodeError> {
+        let decoded: ProcessStartResponse = serde_json::from_value(value.clone())
+            .map_err(|error| WireDecodeError::new("process.start response", error.to_string()))?;
+        decoded
+            .validate()
+            .map_err(|reason| WireDecodeError::new("process.start response", reason))?;
+        Ok(decoded)
+    }
+
+    /// Decodes and validates a `process.stop` request payload produced by any peer.
+    pub fn decode_process_stop_request(
+        value: &serde_json::Value,
+    ) -> Result<ProcessStopRequest, WireDecodeError> {
+        let decoded: ProcessStopRequest = serde_json::from_value(value.clone())
+            .map_err(|error| WireDecodeError::new("process.stop request", error.to_string()))?;
+        decoded
+            .validate()
+            .map_err(|reason| WireDecodeError::new("process.stop request", reason))?;
+        Ok(decoded)
+    }
+
+    /// Decodes and validates a `process.stop` response payload produced by any peer.
+    pub fn decode_process_stop_response(
+        value: &serde_json::Value,
+    ) -> Result<ProcessStopResponse, WireDecodeError> {
+        let decoded: ProcessStopResponse = serde_json::from_value(value.clone())
+            .map_err(|error| WireDecodeError::new("process.stop response", error.to_string()))?;
+        decoded
+            .validate()
+            .map_err(|reason| WireDecodeError::new("process.stop response", reason))?;
+        Ok(decoded)
+    }
+
     /// Decodes and validates a `system.getInfo` request payload produced by any peer.
     pub fn decode_system_get_info_request(
         value: &serde_json::Value,

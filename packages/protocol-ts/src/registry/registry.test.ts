@@ -54,9 +54,13 @@ const loadReleasedBaseline = (): FrozenContractMethod[] =>
   ).methods;
 
 describe('method manifest', () => {
-  it('declares every Phase 1 method with request/response schemas and versions', () => {
+  it('declares every method with request/response schemas and versions', () => {
     const names = METHODS.map((m) => m.name).sort();
     assert.deepEqual(names, [
+      'process.list',
+      'process.output',
+      'process.start',
+      'process.stop',
       'system.getInfo',
       'system.health',
       'system.subscribeEvents',
@@ -775,12 +779,16 @@ describe('optional method support resolution', () => {
 describe('released floor', () => {
   it('is fully present in the current registry at or above floor versions', () => {
     assert.deepEqual(releasedFloorGaps(), []);
-    assert.equal(RELEASED_FLOOR.size, 5);
+    assert.equal(RELEASED_FLOOR.size, 9);
   });
 
   it('snapshots to exactly the floor methods', () => {
     const snapshot = releasedFloorSnapshot();
     assert.deepEqual(snapshot.methods.map((m) => m.name).sort(), [
+      'process.list',
+      'process.output',
+      'process.start',
+      'process.stop',
       'system.getInfo',
       'system.health',
       'system.subscribeEvents',

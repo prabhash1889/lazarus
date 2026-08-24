@@ -3431,11 +3431,15 @@ Migrate the already-built Phase 0/1 implementation from the superseded architect
 
 Have a production-quality local daemon before agent features.
 
+## Phase 2.1 — Host daemon core
+
+### Goal
+
+Establish the durable, authenticated local Host runtime.
+
 ### Build
 
-Host (`lazarus-hostd`):
-
-- single-instance lock;
+- `lazarus-hostd` single-instance lock;
 - loopback server;
 - local auth token;
 - SQLite;
@@ -3446,7 +3450,17 @@ Host (`lazarus-hostd`):
 - health API;
 - startup recovery.
 
-Host process supervision:
+### Exit gate
+
+Start one authenticated Host instance, reject a second instance, persist data through restart, recover migrations cleanly, and expose healthy status and structured logs.
+
+## Phase 2.2 — Host process supervision
+
+### Goal
+
+Make the Host the reliable owner of local processes and terminal sessions.
+
+### Build
 
 - process/PTY ownership;
 - OS process groups / Windows Job Objects;
@@ -3455,24 +3469,64 @@ Host process supervision:
 - resource counters;
 - explicit interruption records after an unexpected Host death.
 
+### Exit gate
+
+Start and stop a supervised process, stream and replay bounded output, report resource counters, terminate the full process tree, and persist an interruption record after an unexpected Host death.
+
+## Phase 2.3 — CLI and Desktop Host lifecycle
+
+### Goal
+
+Expose Host lifecycle and diagnostics through the CLI and connect the Desktop to that lifecycle.
+
+### Build
+
 CLI:
 
 - `host start/stop/status/logs/doctor`.
 
 Desktop:
 
-- call the bundled CLI to detect/bootstrap/update/start/stop the Host;
+- call the bundled CLI to detect/bootstrap/start/stop the Host;
 - reconnect if Host restarts;
 - visible status.
 
-CLI-owned updater:
+### Exit gate
+
+Use the CLI to start, inspect, diagnose, and stop the Host; then restart it while the Desktop is open and prove the Desktop reconnects and shows the correct status.
+
+## Phase 2.4 — CLI-owned Host updater
+
+### Goal
+
+Install and update the Host safely across interruptions.
+
+### Build
 
 - signed manifest parser;
 - checksum validation;
 - resumable Range downloads;
 - partial file persistence;
 - stage-then-promote under the shared cross-process lock;
-- retain a rename-aside install for explicit rollback.
+- retain a rename-aside install for explicit rollback;
+- Desktop delegates Host bootstrap and update to the bundled CLI.
+
+### Exit gate
+
+Reject an invalid signature or checksum, resume an interrupted download, promote a valid update atomically, and explicitly roll back to the retained installation.
+
+## Phase 2.5 — Host lifecycle recovery validation
+
+### Goal
+
+Prove the complete Host lifecycle preserves local state and reports interrupted work honestly.
+
+### Build
+
+- cross-platform lifecycle integration coverage;
+- update interruption and recovery coverage;
+- Host crash and restart recovery coverage;
+- interrupted-process reporting and provider-supported resume/restart coverage.
 
 ### Exit gate
 

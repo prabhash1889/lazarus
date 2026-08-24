@@ -157,6 +157,8 @@ const WIRE_HANDLED_KEYWORDS = new Set([
   'maximum',
   'minLength',
   'maxLength',
+  'format',
+  'pattern',
   'items',
   'properties',
   'required',
@@ -164,6 +166,9 @@ const WIRE_HANDLED_KEYWORDS = new Set([
   'propertyNames',
   'additionalProperties',
 ]);
+
+const UUID_V7_PATTERN =
+  '^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$';
 
 function assertSupported(schema, where) {
   if (typeof schema !== 'object' || schema === null) {
@@ -270,6 +275,9 @@ function constraintLines(label, field, node, optional, mode) {
   };
   if (node.type === 'string') {
     const direct = mode === 'self' && !optional ? 'v' : field;
+    if (node.format !== undefined && (node.format !== 'uuid' || node.pattern !== UUID_V7_PATTERN)) {
+      throw new Error(`wire generator cannot render ${label}: unsupported string format`);
+    }
     if (node.minLength !== undefined) {
       pushCheck(
         optional
@@ -284,6 +292,15 @@ function constraintLines(label, field, node, optional, mode) {
           ? wrapOptional(lenCompare('v', '>', node.maxLength))
           : lenCompare(direct, '>', node.maxLength),
         `must be at most ${node.maxLength} characters`,
+      );
+    }
+    if (node.pattern !== undefined) {
+      if (node.pattern !== UUID_V7_PATTERN || node.format !== 'uuid') {
+        throw new Error(`wire generator cannot render ${label}: unsupported string pattern`);
+      }
+      pushCheck(
+        optional ? wrapOptional('!is_uuid_v7(v)') : `!is_uuid_v7(${direct})`,
+        'must be a UUIDv7 string',
       );
     }
   }
@@ -567,6 +584,19 @@ function rustWireModule() {
       if (collected.usesHashMap) usesHashMap = true;
       defs.push(...collected.defs);
       const label = `${method.name} ${role}`;
+      const validationLines =
+        schema.type === 'array'
+          ? [
+              `    for item in &decoded {`,
+              `        item.validate()`,
+              `            .map_err(|reason| WireDecodeError::new(${JSON.stringify(label)}, reason))?;`,
+              `    }`,
+            ]
+          : [
+              `    decoded`,
+              `        .validate()`,
+              `        .map_err(|reason| WireDecodeError::new(${JSON.stringify(label)}, reason))?;`,
+            ];
       decoders.push(
         [
           `/// Decodes and validates a \`${method.name}\` ${role} payload produced by any peer.`,
@@ -575,9 +605,7 @@ function rustWireModule() {
           `) -> Result<${collected.rootType}, WireDecodeError> {`,
           `    let decoded: ${collected.rootType} = serde_json::from_value(value.clone())`,
           `        .map_err(|error| WireDecodeError::new(${JSON.stringify(label)}, error.to_string()))?;`,
-          `    decoded`,
-          `        .validate()`,
-          `        .map_err(|reason| WireDecodeError::new(${JSON.stringify(label)}, reason))?;`,
+          ...validationLines,
           `    Ok(decoded)`,
           `}`,
         ].join('\n'),
@@ -642,6 +670,21 @@ pub mod wire {${
     }
 
     impl std::error::Error for WireDecodeError {}
+
+    fn is_uuid_v7(value: &str) -> bool {
+        let bytes = value.as_bytes();
+        bytes.len() == 36
+            && bytes[8] == b'-'
+            && bytes[13] == b'-'
+            && bytes[14] == b'7'
+            && bytes[18] == b'-'
+            && matches!(bytes[19], b'8' | b'9' | b'a' | b'b' | b'A' | b'B')
+            && bytes[23] == b'-'
+            && bytes
+                .iter()
+                .enumerate()
+                .all(|(index, byte)| matches!(index, 8 | 13 | 18 | 23) || byte.is_ascii_hexdigit())
+    }
 
     /// Major version of the versioned error-envelope contract
     /// (\`protocol.error\`), frozen in the released-contract baseline like
@@ -722,7 +765,9 @@ function sampleFromSchema(schema, where) {
   if (schema.enum !== undefined) return schema.enum[0];
   switch (schema.type) {
     case 'string':
-      return 'lazarus';
+      return schema.pattern === UUID_V7_PATTERN
+        ? '0198e550-c9be-7000-8000-000000000001'
+        : 'lazarus';
     case 'boolean':
       return true;
     case 'integer': {

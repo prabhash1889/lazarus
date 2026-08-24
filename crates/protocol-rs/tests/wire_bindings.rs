@@ -21,12 +21,28 @@ fn method_fixture(name: &str, role: &str) -> serde_json::Value {
 fn generated_decoders_accept_every_typescript_validated_fixture() {
     let fixtures = fixtures();
     let methods = fixtures["methods"].as_object().expect("methods map");
-    assert_eq!(methods.len(), 5);
+    assert_eq!(methods.len(), 9);
 
     for (name, entry) in methods {
         // Both decoders are erased to Result<(), _> so every arm shares one
         // type while keeping the full error display for failures.
         let outcome = match name.as_str() {
+            "process.list" => (
+                wire::decode_process_list_request(&entry["request"]).map(|_| ()),
+                wire::decode_process_list_response(&entry["response"]).map(|_| ()),
+            ),
+            "process.output" => (
+                wire::decode_process_output_request(&entry["request"]).map(|_| ()),
+                wire::decode_process_output_response(&entry["response"]).map(|_| ()),
+            ),
+            "process.start" => (
+                wire::decode_process_start_request(&entry["request"]).map(|_| ()),
+                wire::decode_process_start_response(&entry["response"]).map(|_| ()),
+            ),
+            "process.stop" => (
+                wire::decode_process_stop_request(&entry["request"]).map(|_| ()),
+                wire::decode_process_stop_response(&entry["response"]).map(|_| ()),
+            ),
             "system.getInfo" => (
                 wire::decode_system_get_info_request(&entry["request"]).map(|_| ()),
                 wire::decode_system_get_info_response(&entry["response"]).map(|_| ()),
@@ -85,6 +101,17 @@ fn decoders_tolerate_unknown_additive_fields() {
 /// bounds, required fields, and types all reject violating payloads.
 #[test]
 fn decoders_enforce_schema_constraints() {
+    let invalid_process_id = serde_json::json!({
+        "processId": "not-a-uuid-v7",
+        "program": "git",
+        "args": [],
+        "runMode": "PIPED",
+        "dataDir": "D:/tmp/lazarus",
+    });
+    let error = wire::decode_process_start_request(&invalid_process_id)
+        .expect_err("processId must be UUIDv7");
+    assert!(error.to_string().contains("processId"), "{error}");
+
     // pageSize below/above the contracted bounds fails validation...
     for bad in [0u64, 101] {
         let payload = serde_json::json!({ "pageSize": bad });

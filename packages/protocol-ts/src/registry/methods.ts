@@ -4,6 +4,16 @@ import { canonicalJson } from './fingerprint.ts';
 import { BRIDGES } from './bridges.ts';
 
 import {
+  ListProcessesRequestSchema,
+  ListProcessesResponseSchema,
+  ProcessOutputRequestSchema,
+  ProcessOutputResponseSchema,
+  StartProcessRequestSchema,
+  StartProcessResponseSchema,
+  StopProcessRequestSchema,
+  StopProcessResponseSchema,
+} from './schemas/process.ts';
+import {
   GetInfoRequestSchema,
   GetInfoResponseSchema,
   HealthRequestSchema,
@@ -15,7 +25,7 @@ import { ListWorkspacesRequestSchema, ListWorkspacesResponseSchema } from './sch
 import { ListTasksRequestSchema, ListTasksResponseSchema } from './schemas/task.ts';
 
 /**
- * The Phase 1 RPC surface. Every entry carries its own `{major, minor}`
+ * The RPC surface. Every entry carries its own `{major, minor}`
  * version; there is no global protocol version. New methods are appended;
  * existing entries only move forward through additive minors (enforced by
  * `validation.validateManifestTransition`).
@@ -59,6 +69,38 @@ export const METHODS: readonly MethodDefinition[] = [
     version: { major: 1, minor: 2 },
     request: ListTasksRequestSchema,
     response: ListTasksResponseSchema,
+    optional: false,
+  },
+  {
+    name: 'process.start',
+    kind: 'unary',
+    version: { major: 1, minor: 0 },
+    request: StartProcessRequestSchema,
+    response: StartProcessResponseSchema,
+    optional: false,
+  },
+  {
+    name: 'process.stop',
+    kind: 'unary',
+    version: { major: 1, minor: 0 },
+    request: StopProcessRequestSchema,
+    response: StopProcessResponseSchema,
+    optional: false,
+  },
+  {
+    name: 'process.list',
+    kind: 'unary',
+    version: { major: 1, minor: 0 },
+    request: ListProcessesRequestSchema,
+    response: ListProcessesResponseSchema,
+    optional: false,
+  },
+  {
+    name: 'process.output',
+    kind: 'unary',
+    version: { major: 1, minor: 0 },
+    request: ProcessOutputRequestSchema,
+    response: ProcessOutputResponseSchema,
     optional: false,
   },
 ];

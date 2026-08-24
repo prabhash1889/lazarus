@@ -346,7 +346,7 @@ mod tests {
     fn accepts_compatible_response_manifest_and_negotiates_per_method() {
         let identical =
             verify_response_manifest(Some(host_manifest_encoded())).expect("compatible");
-        assert_eq!(identical.methods.len(), 5);
+        assert_eq!(identical.methods.len(), host_manifest().len());
 
         // Newer minors on the host side clamp down to the shared floor.
         let mut newer = MethodManifest::default();
@@ -485,9 +485,15 @@ mod tests {
         assert_eq!(json["servingStatus"], "SERVING");
         assert_eq!(json["capabilities"][0]["name"], "events");
         assert_eq!(json["capabilities"][0]["enabled"], true);
-        assert_eq!(json["methods"].as_array().expect("methods array").len(), 5);
-        assert_eq!(json["methods"][0]["name"], "system.getInfo");
-        assert_eq!(json["methods"][0]["version"], "1.0");
+        let methods = json["methods"].as_array().expect("methods array");
+        assert_eq!(methods.len(), host_manifest().len());
+        // Method order follows the manifest map; locate by name instead of
+        // assuming a stable index.
+        let info = methods
+            .iter()
+            .find(|method| method["name"] == "system.getInfo")
+            .expect("system.getInfo is reported");
+        assert_eq!(info["version"], "1.0");
         assert!(json.get("negotiatedVersion").is_none());
 
         let failed = HostStatus {

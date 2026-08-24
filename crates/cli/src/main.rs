@@ -298,7 +298,7 @@ mod tests {
     #[test]
     fn report_lists_version_status_capabilities_and_per_method_versions() {
         let negotiated = negotiated_from(&host_manifest());
-        assert_eq!(negotiated.methods.len(), 5);
+        assert_eq!(negotiated.methods.len(), host_manifest().len());
 
         let report = format_report(
             "1.2.3",
@@ -413,7 +413,7 @@ mod tests {
     fn accepts_compatible_response_manifest_and_negotiates_per_method() {
         let identical = verify_response_manifest(Some(host_manifest_encoded()))
             .expect("identical manifest is compatible");
-        assert_eq!(identical.methods.len(), 5);
+        assert_eq!(identical.methods.len(), host_manifest().len());
 
         // Newer minors on the host side clamp down to the shared floor.
         let mut newer = MethodManifest::default();

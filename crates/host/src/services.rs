@@ -8,22 +8,30 @@
 //! work stops at the budget and answers the canonical `DEADLINE_EXCEEDED`.
 
 use std::convert::Infallible;
+use std::ffi::OsString;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
 use axum::Json;
 use axum::Router;
+use axum::extract::rejection::JsonRejection;
 use axum::extract::rejection::QueryRejection;
 use axum::extract::{Extension, Query, Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::Next;
 use axum::response::sse::{self, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use futures_core::Stream;
+use process_supervisor::{
+    CommandSpec, FramedEvent, OutputStream, ProcessEvent, ProcessHandle, ResourceCounters,
+    Supervisor, TerminalSize,
+};
 use protocol_rs::auth;
 use protocol_rs::bridges::{apply_bridge_steps, downgrade_response_steps};
 use protocol_rs::deadline::{self, Deadline, DeadlineError};
@@ -37,10 +45,14 @@ use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 
 use crate::HostState;
 use crate::events::{EventFrame, needs_tombstone};
+use crate::persistence::{PersistenceError, Store, StoredProcess, StoredResourceCounters};
+use crate::runtime::DATA_DIR_ENV;
 
 /// Header a reconnecting client may send naming the last outage it observed;
 /// an exact match suppresses the tombstone resend.
 pub const LAST_OUTAGE_HEADER: &str = "x-lazarus-last-outage-id";
+
+const MAX_GRACEFUL_TIMEOUT_MS: u64 = 5 * 60 * 1_000;
 
 /// Serves the unary Host surface over loopback-only JSON/HTTP. Every request
 /// passes through [`transport_gate`] before any handler logic runs.
@@ -48,21 +60,48 @@ pub const LAST_OUTAGE_HEADER: &str = "x-lazarus-last-outage-id";
 pub struct HostServices {
     state: Arc<HostState>,
     token: Arc<str>,
+    processes: Option<Arc<ProcessServices>>,
+}
+
+struct ProcessServices {
+    store: Arc<Mutex<Store>>,
+    supervisor: Supervisor,
 }
 
 impl HostServices {
     pub fn new(state: Arc<HostState>, token: Arc<str>) -> Self {
-        Self { state, token }
+        Self {
+            state,
+            token,
+            processes: None,
+        }
+    }
+
+    /// Adds the process-supervision runtime used by the `process.*` routes.
+    pub fn with_process_supervision(
+        state: Arc<HostState>,
+        token: Arc<str>,
+        store: Arc<Mutex<Store>>,
+        supervisor: Supervisor,
+    ) -> Self {
+        Self {
+            state,
+            token,
+            processes: Some(Arc::new(ProcessServices { store, supervisor })),
+        }
     }
 }
 
 /// The stable error code carried in every typed JSON error body.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GateCode {
+    AlreadyExists,
     Unauthenticated,
     InvalidArgument,
     IncompatibleMethodManifest,
     DeadlineExceeded,
+    NotFound,
+    Internal,
 }
 
 impl GateCode {
@@ -70,19 +109,25 @@ impl GateCode {
     /// wire; retryability is derived from it, never set by hand.
     fn error_code(self) -> wire::ProtocolErrorCode {
         match self {
+            Self::AlreadyExists => wire::ProtocolErrorCode::AlreadyExists,
             Self::Unauthenticated => wire::ProtocolErrorCode::Unauthenticated,
             Self::InvalidArgument => wire::ProtocolErrorCode::InvalidArgument,
             Self::IncompatibleMethodManifest => wire::ProtocolErrorCode::IncompatibleMethodManifest,
             Self::DeadlineExceeded => wire::ProtocolErrorCode::DeadlineExceeded,
+            Self::NotFound => wire::ProtocolErrorCode::NotFound,
+            Self::Internal => wire::ProtocolErrorCode::Internal,
         }
     }
 
     fn status(self) -> StatusCode {
         match self {
+            Self::AlreadyExists => StatusCode::CONFLICT,
             Self::Unauthenticated => StatusCode::UNAUTHORIZED,
             Self::InvalidArgument => StatusCode::BAD_REQUEST,
             Self::IncompatibleMethodManifest => StatusCode::PRECONDITION_FAILED,
             Self::DeadlineExceeded => StatusCode::GATEWAY_TIMEOUT,
+            Self::NotFound => StatusCode::NOT_FOUND,
+            Self::Internal => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 }
@@ -136,6 +181,10 @@ fn rpc_method(path: &str) -> Option<&'static str> {
         "/system/events" => Some("system.subscribeEvents"),
         "/workspaces" => Some("workspace.list"),
         "/tasks" => Some("task.list"),
+        "/process/start" => Some("process.start"),
+        "/process/stop" => Some("process.stop"),
+        "/process/list" => Some("process.list"),
+        "/process/output" => Some("process.output"),
         _ => None,
     }
 }
@@ -377,6 +426,409 @@ async fn list_tasks(
     Ok(Json(body))
 }
 
+fn process_runtime(services: &HostServices) -> Result<Arc<ProcessServices>, GateError> {
+    services.processes.clone().ok_or_else(|| {
+        GateError::new(
+            GateCode::Internal,
+            "process supervision is not configured for this Host",
+        )
+    })
+}
+
+fn process_persistence_error(error: PersistenceError) -> GateError {
+    let code = match &error {
+        PersistenceError::Sqlite {
+            source: rusqlite::Error::SqliteFailure(failure, _),
+            ..
+        } if failure.code == rusqlite::ErrorCode::ConstraintViolation => GateCode::AlreadyExists,
+        _ => GateCode::Internal,
+    };
+    GateError::new(code, format!("process persistence failed: {error}"))
+}
+
+fn lock_process_store(
+    processes: &ProcessServices,
+) -> Result<std::sync::MutexGuard<'_, Store>, GateError> {
+    processes
+        .store
+        .lock()
+        .map_err(|_| GateError::new(GateCode::Internal, "process persistence lock is poisoned"))
+}
+
+fn invalid_process_request(reason: impl Into<String>) -> GateError {
+    GateError::new(
+        GateCode::InvalidArgument,
+        format!("request violates the method contract: {}", reason.into()),
+    )
+}
+
+/// Starts one process tree after its durable `STARTING` record commits.
+async fn start_process(
+    State(services): State<HostServices>,
+    payload: Result<Json<wire::ProcessStartRequest>, JsonRejection>,
+) -> Result<Json<wire::ProcessStartResponse>, GateError> {
+    let Json(request) =
+        payload.map_err(|_| GateError::new(GateCode::InvalidArgument, "JSON body is malformed"))?;
+    request.validate().map_err(invalid_process_request)?;
+    if request.program.is_empty() {
+        return Err(invalid_process_request("program must not be empty"));
+    }
+    if request.data_dir.is_empty() {
+        return Err(invalid_process_request("dataDir must not be empty"));
+    }
+    if request.env_allowlist.as_ref().is_some_and(|keys| {
+        keys.iter()
+            .any(|key| key.is_empty() || key.contains(['=', '\0']))
+    }) {
+        return Err(invalid_process_request(
+            "envAllowlist contains an invalid environment variable name",
+        ));
+    }
+
+    let processes = process_runtime(&services)?;
+    let args_json = serde_json::to_string(&request.args)
+        .map_err(|error| GateError::new(GateCode::Internal, error.to_string()))?;
+    {
+        let mut store = lock_process_store(&processes)?;
+        store
+            .insert_supervised_process(
+                &request.process_id,
+                &request.program,
+                &args_json,
+                request.cwd.as_deref(),
+                request.run_mode.as_str(),
+            )
+            .map_err(process_persistence_error)?;
+    }
+
+    let mut spec = CommandSpec::new(&request.program).args(request.args.iter().map(OsString::from));
+    if let Some(cwd) = &request.cwd {
+        spec = spec.cwd(cwd);
+    }
+    if let Some(keys) = &request.env_allowlist {
+        for key in keys {
+            if let Some(value) = std::env::var_os(key) {
+                spec = spec.env(key, value);
+            }
+        }
+    }
+    spec = spec.env(DATA_DIR_ENV, &request.data_dir);
+    if request.run_mode == wire::ProcessStartRequestRunMode::Pty {
+        spec = spec.pty(TerminalSize::default());
+    }
+
+    let handle = match processes
+        .supervisor
+        .start(request.process_id.clone(), spec)
+        .await
+    {
+        Ok(handle) => handle,
+        Err(error) => {
+            let mut store = lock_process_store(&processes)?;
+            store
+                .mark_process_finished(
+                    &request.process_id,
+                    "STOPPED",
+                    None,
+                    &StoredResourceCounters::default(),
+                )
+                .map_err(process_persistence_error)?;
+            return Err(invalid_process_request(format!(
+                "process could not be started: {error}"
+            )));
+        }
+    };
+    let running_transition = {
+        let mut store = lock_process_store(&processes)?;
+        store
+            .mark_process_running(&request.process_id, handle.pid())
+            .map_err(process_persistence_error)
+    };
+    if let Err(error) = running_transition {
+        let _ = processes.supervisor.stop(&request.process_id).await;
+        return Err(error);
+    }
+    tokio::spawn(persist_process_events(processes, handle));
+
+    Ok(Json(wire::ProcessStartResponse {
+        process_id: request.process_id,
+        status: wire::ProcessStartResponseStatus::Running,
+    }))
+}
+
+/// Stops the complete process tree within the caller's optional grace period.
+async fn stop_process(
+    State(services): State<HostServices>,
+    payload: Result<Json<wire::ProcessStopRequest>, JsonRejection>,
+) -> Result<Json<wire::ProcessStopResponse>, GateError> {
+    let Json(request) =
+        payload.map_err(|_| GateError::new(GateCode::InvalidArgument, "JSON body is malformed"))?;
+    request.validate().map_err(invalid_process_request)?;
+    let grace = match request.graceful_timeout_ms {
+        Some(0) => {
+            return Err(invalid_process_request(
+                "gracefulTimeoutMs must be greater than zero",
+            ));
+        }
+        Some(milliseconds) if milliseconds > MAX_GRACEFUL_TIMEOUT_MS => {
+            return Err(invalid_process_request(format!(
+                "gracefulTimeoutMs must be at most {MAX_GRACEFUL_TIMEOUT_MS}"
+            )));
+        }
+        Some(milliseconds) => Some(Duration::from_millis(milliseconds)),
+        None => None,
+    };
+    let processes = process_runtime(&services)?;
+    let exit = processes
+        .supervisor
+        .stop_with_timeout(&request.process_id, grace)
+        .await
+        .map_err(|error| GateError::new(GateCode::NotFound, error.to_string()))?;
+    let handle = processes
+        .supervisor
+        .get(&request.process_id)
+        .ok_or_else(|| GateError::new(GateCode::NotFound, "supervised process was not found"))?;
+    let counters = stored_counters(&handle.counters());
+    let dropped = handle.replay(0).dropped_bytes;
+    {
+        let mut store = lock_process_store(&processes)?;
+        store
+            .record_dropped_output_bytes(&request.process_id, dropped)
+            .and_then(|()| {
+                store.mark_process_finished(&request.process_id, "STOPPED", exit.code, &counters)
+            })
+            .map_err(process_persistence_error)?;
+    }
+    Ok(Json(wire::ProcessStopResponse {
+        process_id: request.process_id,
+        status: wire::ProcessStopResponseStatus::Stopped,
+    }))
+}
+
+async fn list_processes(
+    State(services): State<HostServices>,
+) -> Result<Json<Vec<wire::ProcessListResponseItem>>, GateError> {
+    let processes = process_runtime(&services)?;
+    let stored = lock_process_store(&processes)?
+        .list_supervised_processes()
+        .map_err(process_persistence_error)?;
+    let response = stored
+        .iter()
+        .map(|process| process_summary(&processes.supervisor, process))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Json(response))
+}
+
+async fn process_output(
+    State(services): State<HostServices>,
+    query: Result<Query<wire::ProcessOutputRequest>, QueryRejection>,
+) -> Result<Json<wire::ProcessOutputResponse>, GateError> {
+    let Query(request) = query
+        .map_err(|_| GateError::new(GateCode::InvalidArgument, "query parameters are malformed"))?;
+    request.validate().map_err(invalid_process_request)?;
+    let processes = process_runtime(&services)?;
+    let replay = lock_process_store(&processes)?
+        .process_output(&request.process_id, request.offset)
+        .map_err(process_persistence_error)?
+        .ok_or_else(|| GateError::new(GateCode::NotFound, "supervised process was not found"))?;
+    let frames = replay
+        .frames
+        .into_iter()
+        .map(|frame| {
+            let stream = match frame.stream.as_str() {
+                "STDOUT" => wire::ProcessOutputResponseFramesItemStream::Stdout,
+                "STDERR" => wire::ProcessOutputResponseFramesItemStream::Stderr,
+                "PTY" => wire::ProcessOutputResponseFramesItemStream::Pty,
+                _ => {
+                    return Err(GateError::new(
+                        GateCode::Internal,
+                        "stored process output has an invalid stream",
+                    ));
+                }
+            };
+            Ok(wire::ProcessOutputResponseFramesItem {
+                seq: frame.seq,
+                stream,
+                payload: BASE64.encode(frame.payload),
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Json(wire::ProcessOutputResponse {
+        frames,
+        next_offset: replay.next_offset,
+        truncated: replay.truncated,
+    }))
+}
+
+fn process_summary(
+    supervisor: &Supervisor,
+    process: &StoredProcess,
+) -> Result<wire::ProcessListResponseItem, GateError> {
+    let handle = supervisor.get(&process.id);
+    let (status, counters, exit_code, dropped_output_bytes) = if let Some(handle) = handle {
+        let counters = handle.counters();
+        let status = if handle.is_running() {
+            wire::ProcessListResponseItemStatus::Running
+        } else if process.status == "STOPPED" {
+            wire::ProcessListResponseItemStatus::Stopped
+        } else {
+            wire::ProcessListResponseItemStatus::Exited
+        };
+        let exit_code = counters
+            .exit
+            .as_ref()
+            .and_then(|exit| exit.code)
+            .and_then(|code| u64::try_from(code).ok());
+        let dropped = process
+            .dropped_output_bytes
+            .max(handle.replay(0).dropped_bytes);
+        (status, wire_counters(&counters), exit_code, dropped)
+    } else {
+        (
+            stored_status(&process.status)?,
+            wire::ProcessListResponseItemResourceCounters {
+                duration_ms: process.counters.duration_ms,
+                stdout_bytes: process.counters.stdout_bytes,
+                stderr_bytes: process.counters.stderr_bytes,
+                cpu_ms: process.counters.cpu_ms,
+                peak_memory_bytes: process.counters.peak_memory_bytes,
+            },
+            process.exit_code.and_then(|code| u64::try_from(code).ok()),
+            process.dropped_output_bytes,
+        )
+    };
+    Ok(wire::ProcessListResponseItem {
+        process_id: process.id.clone(),
+        status,
+        started_at: Some(process.started_at.clone()),
+        exited_at: process.exited_at.clone(),
+        exit_code,
+        resource_counters: counters,
+        dropped_output_bytes,
+    })
+}
+
+fn stored_status(status: &str) -> Result<wire::ProcessListResponseItemStatus, GateError> {
+    match status {
+        "STARTING" => Ok(wire::ProcessListResponseItemStatus::Starting),
+        "RUNNING" => Ok(wire::ProcessListResponseItemStatus::Running),
+        "EXITED" => Ok(wire::ProcessListResponseItemStatus::Exited),
+        "STOPPED" => Ok(wire::ProcessListResponseItemStatus::Stopped),
+        "INTERRUPTED" => Ok(wire::ProcessListResponseItemStatus::Interrupted),
+        _ => Err(GateError::new(
+            GateCode::Internal,
+            "stored process has an invalid status",
+        )),
+    }
+}
+
+fn stored_counters(counters: &ResourceCounters) -> StoredResourceCounters {
+    StoredResourceCounters {
+        duration_ms: Some(duration_ms(counters.wall_time)),
+        stdout_bytes: counters.stdout_bytes.saturating_add(counters.pty_bytes),
+        stderr_bytes: counters.stderr_bytes,
+        cpu_ms: counters.cpu_time.map(duration_ms),
+        peak_memory_bytes: counters.peak_memory_bytes,
+    }
+}
+
+fn wire_counters(counters: &ResourceCounters) -> wire::ProcessListResponseItemResourceCounters {
+    let counters = stored_counters(counters);
+    wire::ProcessListResponseItemResourceCounters {
+        duration_ms: counters.duration_ms,
+        stdout_bytes: counters.stdout_bytes,
+        stderr_bytes: counters.stderr_bytes,
+        cpu_ms: counters.cpu_ms,
+        peak_memory_bytes: counters.peak_memory_bytes,
+    }
+}
+
+fn duration_ms(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
+async fn persist_process_events(processes: Arc<ProcessServices>, handle: ProcessHandle) {
+    let mut events = handle.subscribe();
+    let mut next_offset = 0;
+    loop {
+        let replay = handle.replay(next_offset);
+        if let Err(error) = persist_dropped_output(&processes, handle.id(), replay.dropped_bytes) {
+            tracing::warn!(component = "hostd", event = "process.output_persist_failed", message = %error.message);
+            return;
+        }
+        for frame in replay.frames {
+            if frame.offset < next_offset {
+                continue;
+            }
+            next_offset = frame.offset.saturating_add(1);
+            if let Err(error) = persist_process_frame(&processes, handle.id(), &frame) {
+                tracing::warn!(component = "hostd", event = "process.output_persist_failed", message = %error.message);
+                return;
+            }
+        }
+        next_offset = next_offset.max(replay.next_offset);
+        if !handle.is_running() {
+            break;
+        }
+        match events.recv().await {
+            Ok(frame) if frame.offset >= next_offset => {
+                next_offset = frame.offset.saturating_add(1);
+                if let Err(error) = persist_process_frame(&processes, handle.id(), &frame) {
+                    tracing::warn!(component = "hostd", event = "process.output_persist_failed", message = %error.message);
+                    return;
+                }
+            }
+            Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+        }
+    }
+
+    let counters = handle.counters();
+    if let Err(error) = lock_process_store(&processes).and_then(|mut store| {
+        store
+            .record_dropped_output_bytes(handle.id(), handle.replay(0).dropped_bytes)
+            .and_then(|()| {
+                store.mark_process_finished(
+                    handle.id(),
+                    "EXITED",
+                    counters.exit.as_ref().and_then(|exit| exit.code),
+                    &stored_counters(&counters),
+                )
+            })
+            .map_err(process_persistence_error)
+    }) {
+        tracing::warn!(component = "hostd", event = "process.exit_persist_failed", message = %error.message);
+    }
+}
+
+fn persist_dropped_output(
+    processes: &ProcessServices,
+    process_id: &str,
+    dropped_bytes: u64,
+) -> Result<(), GateError> {
+    lock_process_store(processes)?
+        .record_dropped_output_bytes(process_id, dropped_bytes)
+        .map_err(process_persistence_error)
+}
+
+fn persist_process_frame(
+    processes: &ProcessServices,
+    process_id: &str,
+    frame: &FramedEvent,
+) -> Result<(), GateError> {
+    let ProcessEvent::Output { stream, bytes } = &frame.event else {
+        return Ok(());
+    };
+    let stream = match stream {
+        OutputStream::Stdout => "STDOUT",
+        OutputStream::Stderr => "STDERR",
+        OutputStream::Pty => "PTY",
+    };
+    lock_process_store(processes)?
+        .append_output_frame(process_id, frame.offset, stream, bytes)
+        .map_err(process_persistence_error)
+}
+
 /// The SSE subscription stream: the opening tombstone/snapshot prefix, then
 /// live frames until the client disconnects, falls behind, or reaches its
 /// deadline. The feed is the bus's bounded broadcast channel, so a slow
@@ -480,6 +932,10 @@ pub fn build_router(services: HostServices) -> Router {
         .route("/system/events", get(system_events))
         .route("/workspaces", get(list_workspaces))
         .route("/tasks", get(list_tasks))
+        .route("/process/start", post(start_process))
+        .route("/process/stop", post(stop_process))
+        .route("/process/list", get(list_processes))
+        .route("/process/output", get(process_output))
         .layer(axum::middleware::from_fn_with_state(
             services.clone(),
             transport_gate,
@@ -767,6 +1223,10 @@ mod tests {
         assert_eq!(rpc_method("/system/health"), Some("system.health"));
         assert_eq!(rpc_method("/workspaces"), Some("workspace.list"));
         assert_eq!(rpc_method("/tasks"), Some("task.list"));
+        assert_eq!(rpc_method("/process/start"), Some("process.start"));
+        assert_eq!(rpc_method("/process/stop"), Some("process.stop"));
+        assert_eq!(rpc_method("/process/list"), Some("process.list"));
+        assert_eq!(rpc_method("/process/output"), Some("process.output"));
         assert_eq!(rpc_method("/unknown"), None);
     }
 
