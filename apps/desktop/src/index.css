@@ -79,3 +79,148 @@ body {
   max-width: 42rem;
   overflow-wrap: anywhere;
 }
+
+.status-header {
+  display: flex;
+  justify-content: center;
+}
+
+.pill {
+  display: inline-block;
+  padding: 0.2rem 0.9rem;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  border: 1px solid transparent;
+}
+
+.pill-running {
+  background: rgba(72, 199, 142, 0.15);
+  color: #48c78e;
+  border-color: rgba(72, 199, 142, 0.4);
+}
+
+.pill-starting,
+.pill-connecting {
+  background: rgba(240, 200, 90, 0.12);
+  color: #f0c85a;
+  border-color: rgba(240, 200, 90, 0.4);
+}
+
+.pill-stopping {
+  background: rgba(240, 160, 90, 0.12);
+  color: #f0a05a;
+  border-color: rgba(240, 160, 90, 0.4);
+}
+
+.pill-stopped {
+  background: rgba(140, 148, 160, 0.12);
+  color: #8c94a0;
+  border-color: rgba(140, 148, 160, 0.4);
+}
+
+.pill-degraded,
+.pill-error {
+  background: rgba(255, 132, 132, 0.12);
+  color: #ff8484;
+  border-color: rgba(255, 132, 132, 0.4);
+}
+
+.actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.actions button {
+  padding: 0.4rem 1rem;
+  border-radius: 6px;
+  border: 1px solid #2c3444;
+  background: #151b26;
+  color: inherit;
+  cursor: pointer;
+}
+
+.actions button:hover:not(:disabled) {
+  border-color: #3d4a61;
+}
+
+.actions button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.link-button {
+  background: none;
+  border: none;
+  color: #7aa2f7;
+  cursor: pointer;
+  padding: 0;
+  font: inherit;
+}
+
+.reconnect-banner {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-top: 0.75rem;
+  padding: 0.45rem 1rem;
+  border-radius: 6px;
+  border: 1px solid rgba(72, 199, 142, 0.4);
+  background: rgba(72, 199, 142, 0.1);
+  color: #48c78e;
+}
+
+.doctor-panel {
+  margin-top: 1rem;
+  width: min(42rem, 92vw);
+  max-height: 50vh;
+  overflow-y: auto;
+  padding: 1rem;
+  border-radius: 8px;
+  border: 1px solid #2c3444;
+  background: #10151f;
+  text-align: left;
+}
+
+.doctor-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.doctor-header h2 {
+  margin: 0;
+}
+
+.report-grid {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.report-row {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.75rem;
+  text-align: left;
+}
+
+.report-row dt {
+  font-weight: 600;
+  opacity: 0.7;
+}
+
+.report-row dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.report-list {
+  margin: 0;
+  padding-left: 1.25rem;
+}
