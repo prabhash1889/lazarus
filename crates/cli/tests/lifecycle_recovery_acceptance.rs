@@ -261,6 +261,24 @@ async fn wait_unreachable(client: &AuthedClient) {
     panic!("the Host still answers health probes");
 }
 
+async fn wait_stopped(paths: &DataPaths) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        if let Ok(conn) = rusqlite::Connection::open(paths.database()) {
+            let lifecycle = conn.query_row(
+                "SELECT value FROM runtime_meta WHERE key = 'host.lifecycle'",
+                [],
+                |row| row.get::<_, String>(0),
+            );
+            if lifecycle.as_deref() == Ok("stopped") && !paths.host.join("running.json").exists() {
+                return;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("the Host did not persist a clean stop in time");
+}
+
 #[cfg(windows)]
 fn force_kill(pid: u32) {
     let output = Command::new("taskkill")
@@ -697,22 +715,7 @@ async fn phase25_exit_gate_end_to_end() {
     let stopped = run_cli(&root.root, &["host", "stop"]);
     assert!(cli_stdout(&stopped, "graceful stop").contains("Host stopped"));
     wait_unreachable(&client_two).await;
-    {
-        let conn = rusqlite::Connection::open(root.database()).expect("open stopped database");
-        let lifecycle: String = conn
-            .query_row(
-                "SELECT value FROM runtime_meta WHERE key = 'host.lifecycle'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("read lifecycle meta");
-        assert_eq!(lifecycle, "stopped");
-        drop(conn);
-    }
-    assert!(
-        !root.host.join("running.json").exists(),
-        "graceful shutdown removes the crash marker"
-    );
+    wait_stopped(&root).await;
     eprintln!("phase25: complete");
 
     std::fs::remove_dir_all(&root.root).ok();
