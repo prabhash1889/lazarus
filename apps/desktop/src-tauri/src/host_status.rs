@@ -11,6 +11,7 @@
 //! when the Host is unreachable or incompatible.
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use protocol_rs::auth::{self, LOCAL_TOKEN_ENV, bearer_header};
@@ -76,7 +77,7 @@ pub async fn host_status() -> HostStatus {
 }
 
 async fn probe() -> Result<HostStatus, String> {
-    let token = resolve_token(std::env::var(LOCAL_TOKEN_ENV).ok().as_deref())?;
+    let token = local_token()?;
     let client = reqwest::Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
         .build()
@@ -109,17 +110,46 @@ async fn probe() -> Result<HostStatus, String> {
     })
 }
 
-/// Resolves the local token from its raw environment value. Fails clearly
-/// before any network activity when it is unset or empty; the token value is
-/// never echoed into an error message.
-fn resolve_token(raw: Option<&str>) -> Result<String, String> {
-    match raw.map(str::trim) {
-        None => Err(format!(
-            "{LOCAL_TOKEN_ENV} is not set; start the Host with a per-install local token"
-        )),
+/// Resolves the local token: the raw environment value when present, else
+/// the per-install token file `lazarus host start` provisions under the
+/// data root. Fails clearly before any network activity when neither is
+/// available; the token value is never echoed into an error message.
+fn local_token() -> Result<String, String> {
+    let from_env = std::env::var(LOCAL_TOKEN_ENV).ok();
+    let from_file = data_root()
+        .ok()
+        .and_then(|root| std::fs::read_to_string(root.join("auth").join("local-token")).ok());
+    choose_token(from_env.as_deref(), from_file.as_deref())
+}
+
+/// Pure token selection over the two provision sources, so every branch is
+/// unit-testable without touching the real environment or file system.
+fn choose_token(from_env: Option<&str>, from_file: Option<&str>) -> Result<String, String> {
+    match from_env.map(str::trim) {
         Some("") => Err(format!("{LOCAL_TOKEN_ENV} is set but empty")),
         Some(token) => Ok(token.to_owned()),
+        None => match from_file.map(str::trim) {
+            None => Err("no local token available; run `lazarus host start` first".to_owned()),
+            Some("") => Err(
+                "the per-install token file exists but is empty; run `lazarus host start` to re-provision"
+                    .to_owned(),
+            ),
+            Some(token) => Ok(token.to_owned()),
+        },
     }
+}
+
+/// The Lazarus data root: `LAZARUS_DATA_DIR` when set, else the user's home.
+fn data_root() -> Result<PathBuf, String> {
+    if let Some(root) = std::env::var_os("LAZARUS_DATA_DIR").filter(|v| !v.is_empty()) {
+        return Ok(PathBuf::from(root));
+    }
+    for key in ["USERPROFILE", "HOME"] {
+        if let Some(home) = std::env::var_os(key).filter(|v| !v.is_empty()) {
+            return Ok(PathBuf::from(home).join(".lazarus"));
+        }
+    }
+    Err("cannot resolve the Lazarus data root (no LAZARUS_DATA_DIR or home directory)".to_owned())
 }
 
 /// The contract headers every Host request must carry: the `Authorization`
@@ -268,29 +298,31 @@ mod tests {
     }
 
     #[test]
-    fn rejects_missing_or_empty_local_token_before_any_network_use() {
+    fn token_selection_prefers_env_then_file_and_never_echoes_secrets() {
         assert_eq!(
-            resolve_token(None).unwrap_err(),
-            format!("{LOCAL_TOKEN_ENV} is not set; start the Host with a per-install local token")
+            choose_token(None, None).unwrap_err(),
+            "no local token available; run `lazarus host start` first"
         );
         assert_eq!(
-            resolve_token(Some("")).unwrap_err(),
+            choose_token(Some("  "), None).unwrap_err(),
             format!("{LOCAL_TOKEN_ENV} is set but empty")
         );
         assert_eq!(
-            resolve_token(Some("   ")).unwrap_err(),
-            format!("{LOCAL_TOKEN_ENV} is set but empty")
+            choose_token(None, Some("   ")).unwrap_err(),
+            "the per-install token file exists but is empty; run `lazarus host start` to re-provision"
         );
 
         let secret = "s3cret-token-value";
-        let resolved = resolve_token(Some(secret)).expect("valid token");
-        assert_eq!(resolved, secret);
-        for error in [
-            resolve_token(None).unwrap_err(),
-            resolve_token(Some("")).unwrap_err(),
-        ] {
-            assert!(!error.contains(secret), "error must not echo the token");
-        }
+        assert_eq!(
+            choose_token(Some("  s3cret-token-value  "), None).expect("env"),
+            secret
+        );
+        assert_eq!(choose_token(None, Some(secret)).expect("file"), secret);
+        // A non-empty env value wins over the file.
+        assert_eq!(
+            choose_token(Some("env-token"), Some("file-token")).expect("both"),
+            "env-token"
+        );
     }
 
     #[test]
