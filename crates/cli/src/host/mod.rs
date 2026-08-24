@@ -1,17 +1,42 @@
-//! `lazarus host`: daemon lifecycle and diagnostics.
+//! `lazarus host`: daemon lifecycle, installation, and diagnostics.
 
 pub mod discovery;
 mod doctor;
 mod logs;
-mod start;
+pub(crate) mod start;
 mod status;
 mod stop;
+mod update;
 
 use anyhow::Result;
 use clap::Subcommand;
 
 #[derive(Subcommand)]
 pub enum HostCommands {
+    /// Install the Host from a signed release manifest (first-time
+    /// bootstrap or explicit reinstall).
+    Install {
+        #[command(flatten)]
+        args: update::InstallArgs,
+    },
+    /// Install only when missing or out of date; no-op when current. The
+    /// idempotent bootstrap the Desktop calls before `host start`.
+    Ensure {
+        #[command(flatten)]
+        args: update::EnsureArgs,
+    },
+    /// Update the installed Host from a signed release manifest,
+    /// retaining the previous installation for rollback.
+    Update {
+        #[command(flatten)]
+        args: update::UpdateArgs,
+    },
+    /// Swap the retained previous installation back in.
+    Rollback {
+        /// Emit machine-readable JSON instead of human output.
+        #[arg(long)]
+        json: bool,
+    },
     /// Start lazarus-hostd detached, provision the local token, wait for
     /// health, and record the instance under the data root.
     Start {
@@ -57,6 +82,10 @@ pub enum HostCommands {
 
 pub async fn dispatch(command: HostCommands) -> Result<()> {
     match command {
+        HostCommands::Install { args } => update::run_install(args).await,
+        HostCommands::Ensure { args } => update::run_ensure(args).await,
+        HostCommands::Update { args } => update::run_update(args).await,
+        HostCommands::Rollback { json } => update::run_rollback(json).await,
         HostCommands::Start { addr, json } => start::run(addr, json).await,
         HostCommands::Stop { json } => stop::run(json).await,
         HostCommands::Status { addr, json } => status::run(addr, json).await,
