@@ -120,7 +120,12 @@ async fn main() -> Result<()> {
 }
 
 async fn shutdown_signal(state: Arc<HostState>) {
-    wait_for_shutdown_signal().await;
+    tokio::select! {
+        _ = wait_for_shutdown_signal() => {},
+        // The authenticated lifecycle RPC requests the same drain as a
+        // terminal signal; either source must stop the serve loop.
+        _ = state.until_shutdown_requested() => {},
+    }
     state.begin_shutdown();
     info!(component = "hostd", event = "host.draining");
 }

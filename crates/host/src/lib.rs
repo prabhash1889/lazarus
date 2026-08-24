@@ -125,6 +125,13 @@ impl HostState {
     pub(crate) fn subscribe_shutdown(&self) -> broadcast::Receiver<()> {
         self.shutdown.subscribe()
     }
+
+    /// Resolves once graceful shutdown has been requested through any
+    /// surface: a terminal signal or the authenticated lifecycle RPC.
+    pub async fn until_shutdown_requested(&self) {
+        let mut rx = self.shutdown.subscribe();
+        let _ = rx.recv().await;
+    }
 }
 
 impl Default for HostState {

@@ -179,6 +179,7 @@ fn rpc_method(path: &str) -> Option<&'static str> {
         "/system/info" => Some("system.getInfo"),
         "/system/health" => Some("system.health"),
         "/system/events" => Some("system.subscribeEvents"),
+        "/system/shutdown" => Some("system.shutdown"),
         "/workspaces" => Some("workspace.list"),
         "/tasks" => Some("task.list"),
         "/process/start" => Some("process.start"),
@@ -372,6 +373,22 @@ async fn health(State(services): State<HostServices>) -> Json<wire::SystemHealth
             wire::SystemHealthResponseStatus::NotServing
         },
     })
+}
+
+/// `POST /system/shutdown`: the authenticated local lifecycle control the
+/// CLI (and, through it, the Desktop) uses to stop the Host. It triggers the
+/// same graceful drain as a terminal signal: serving flips off, subscribers
+/// are closed, supervised processes finalize, and the crash marker clears.
+/// The response returns before draining so the caller observes an ack
+/// instead of a dropped connection.
+async fn system_shutdown(State(services): State<HostServices>) -> Json<serde_json::Value> {
+    tracing::info!(
+        component = "hostd",
+        event = "host.shutdown_requested",
+        "graceful shutdown requested over the authenticated local surface"
+    );
+    services.state.begin_shutdown();
+    Json(serde_json::json!({ "status": "SHUTDOWN_REQUESTED" }))
 }
 
 /// Decodes a paginated request's query string into its generated request
@@ -930,6 +947,7 @@ pub fn build_router(services: HostServices) -> Router {
         .route("/system/info", get(system_info))
         .route("/system/health", get(health))
         .route("/system/events", get(system_events))
+        .route("/system/shutdown", post(system_shutdown))
         .route("/workspaces", get(list_workspaces))
         .route("/tasks", get(list_tasks))
         .route("/process/start", post(start_process))
@@ -1227,6 +1245,7 @@ mod tests {
         assert_eq!(rpc_method("/process/stop"), Some("process.stop"));
         assert_eq!(rpc_method("/process/list"), Some("process.list"));
         assert_eq!(rpc_method("/process/output"), Some("process.output"));
+        assert_eq!(rpc_method("/system/shutdown"), Some("system.shutdown"));
         assert_eq!(rpc_method("/unknown"), None);
     }
 
