@@ -11,6 +11,9 @@ fn main() {
             host_lifecycle::host_start,
             host_lifecycle::host_stop,
             host_lifecycle::host_doctor,
+            host_lifecycle::host_ensure,
+            host_lifecycle::host_update,
+            host_lifecycle::host_rollback,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run the Lazarus desktop shell");

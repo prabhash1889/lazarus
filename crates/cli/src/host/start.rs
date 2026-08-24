@@ -55,6 +55,15 @@ pub(crate) fn resolve_daemon_binary() -> Result<PathBuf> {
             path.display()
         );
     }
+    // An updater-managed installation wins: it is the release the user
+    // (or Desktop) explicitly installed, which may be newer than whatever
+    // happens to sit beside this CLI.
+    if let Ok(paths) = DataPaths::resolve() {
+        let installed = paths.host.join("install").join(file_name);
+        if installed.exists() {
+            return Ok(installed);
+        }
+    }
     if let Ok(current) = std::env::current_exe()
         && let Some(sibling) = current.parent().map(|dir| dir.join(file_name))
         && sibling.exists()
