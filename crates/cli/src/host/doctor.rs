@@ -226,11 +226,22 @@ fn port_check(reachable: bool, record: Option<&PidRecord>) -> Check {
     if reachable || record.is_none() {
         return pass("listen-port", "skipped while nothing needs to bind");
     }
-    let addr: SocketAddr = record
-        .map(|r| r.addr.trim_start_matches("http://").to_owned())
-        .unwrap_or_else(|| discovery::DEFAULT_LISTEN_ADDR.to_owned())
-        .parse()
-        .expect("recorded addr parses as ip:port");
+    // The instance record is CLI-written, but it is still user-editable
+    // state: a malformed address must degrade to a failed check, never a
+    // panic in a diagnostics command.
+    let Some(record) = record else {
+        return warn("listen-port", "no recorded address to check");
+    };
+    let Ok(addr) = record
+        .addr
+        .trim_start_matches("http://")
+        .parse::<SocketAddr>()
+    else {
+        return fail(
+            "listen-port",
+            format!("recorded address {:?} is not ip:port", record.addr),
+        );
+    };
     match std::net::TcpListener::bind(addr) {
         Ok(listener) => {
             drop(listener);
