@@ -1,8 +1,6 @@
-mod client;
-mod host;
-
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use lazarus_cli::host;
 
 #[derive(Parser)]
 #[command(name = "lazarus", version, about = "Lazarus CLI")]
