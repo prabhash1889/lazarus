@@ -30,7 +30,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use futures_core::Stream;
 use process_supervisor::{
     CommandSpec, FramedEvent, OutputStream, ProcessEvent, ProcessHandle, ResourceCounters,
-    Supervisor, TerminalSize,
+    Supervisor, SupervisorError, TerminalSize,
 };
 use protocol_rs::auth;
 use protocol_rs::bridges::{apply_bridge_steps, downgrade_response_steps};
@@ -45,7 +45,9 @@ use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 
 use crate::HostState;
 use crate::events::{EventFrame, needs_tombstone};
-use crate::persistence::{PersistenceError, Store, StoredProcess, StoredResourceCounters};
+use crate::persistence::{
+    NewSupervisedProcess, PersistenceError, Store, StoredProcess, StoredResourceCounters,
+};
 use crate::runtime::DATA_DIR_ENV;
 
 /// Header a reconnecting client may send naming the last outage it observed;
@@ -186,6 +188,7 @@ fn rpc_method(path: &str) -> Option<&'static str> {
         "/process/stop" => Some("process.stop"),
         "/process/list" => Some("process.list"),
         "/process/output" => Some("process.output"),
+        "/process/resume" => Some("process.resume"),
         _ => None,
     }
 }
@@ -505,16 +508,21 @@ async fn start_process(
     let processes = process_runtime(&services)?;
     let args_json = serde_json::to_string(&request.args)
         .map_err(|error| GateError::new(GateCode::Internal, error.to_string()))?;
+    let env_allowlist_json = request.env_allowlist.as_ref().map(|keys| {
+        serde_json::to_string(keys).expect("a validated string array always serializes")
+    });
     {
         let mut store = lock_process_store(&processes)?;
         store
-            .insert_supervised_process(
-                &request.process_id,
-                &request.program,
-                &args_json,
-                request.cwd.as_deref(),
-                request.run_mode.as_str(),
-            )
+            .insert_supervised_process(&NewSupervisedProcess {
+                id: &request.process_id,
+                program: &request.program,
+                args_json: &args_json,
+                cwd: request.cwd.as_deref(),
+                run_mode: request.run_mode.as_str(),
+                data_dir: &request.data_dir,
+                env_allowlist_json: env_allowlist_json.as_deref(),
+            })
             .map_err(process_persistence_error)?;
     }
 
@@ -570,6 +578,104 @@ async fn start_process(
     Ok(Json(wire::ProcessStartResponse {
         process_id: request.process_id,
         status: wire::ProcessStartResponseStatus::Running,
+    }))
+}
+
+/// Re-runs an interrupted process under its durable spawn specification.
+/// The Host owns everything needed to run the same command line again, so
+/// the caller names only the process; output history and interruption audit
+/// records stay attached to the same durable identity.
+async fn resume_process(
+    State(services): State<HostServices>,
+    payload: Result<Json<wire::ProcessResumeRequest>, JsonRejection>,
+) -> Result<Json<wire::ProcessResumeResponse>, GateError> {
+    let Json(request) =
+        payload.map_err(|_| GateError::new(GateCode::InvalidArgument, "JSON body is malformed"))?;
+    request.validate().map_err(invalid_process_request)?;
+
+    let processes = process_runtime(&services)?;
+    let spec = {
+        let store = lock_process_store(&processes)?;
+        store
+            .supervised_process_spec(&request.process_id)
+            .map_err(process_persistence_error)?
+            .ok_or_else(|| GateError::new(GateCode::NotFound, "supervised process was not found"))?
+    };
+    if spec.status != "INTERRUPTED" {
+        return Err(GateError::new(
+            GateCode::InvalidArgument,
+            format!(
+                "process {} is {} and cannot be resumed; only INTERRUPTED processes can be",
+                request.process_id, spec.status
+            ),
+        ));
+    }
+    if spec.data_dir.is_empty() {
+        return Err(GateError::new(
+            GateCode::InvalidArgument,
+            format!(
+                "process {} predates durable spawn specifications and cannot be resumed; start a new process instead",
+                request.process_id
+            ),
+        ));
+    }
+
+    let args: Vec<String> = serde_json::from_str(&spec.args_json).map_err(|error| {
+        GateError::new(
+            GateCode::Internal,
+            format!("stored args are invalid JSON: {error}"),
+        )
+    })?;
+    let mut command = CommandSpec::new(&spec.program).args(args.iter().map(OsString::from));
+    if let Some(cwd) = &spec.cwd {
+        command = command.cwd(cwd);
+    }
+    for key in &spec.env_allowlist {
+        if !key.is_empty()
+            && !key.contains(['=', '\0'])
+            && let Some(value) = std::env::var_os(key)
+        {
+            command = command.env(key, value);
+        }
+    }
+    command = command.env(DATA_DIR_ENV, &spec.data_dir);
+    if spec.run_mode == "PTY" {
+        command = command.pty(TerminalSize::default());
+    }
+
+    let handle = match processes.supervisor.start(spec.id.clone(), command).await {
+        Ok(handle) => handle,
+        Err(error) => {
+            return Err(match error {
+                SupervisorError::DuplicateId(id) => GateError::new(
+                    GateCode::AlreadyExists,
+                    format!("a supervised process named {id:?} already exists here"),
+                ),
+                other => invalid_process_request(format!(
+                    "interrupted process could not be resumed: {other}"
+                )),
+            });
+        }
+    };
+
+    // The guarded INTERRUPTED -> RUNNING transition is the durability gate:
+    // if another caller won the race, stop the duplicate OS process this
+    // request just started so nothing runs outside the record.
+    let resumed = lock_process_store(&processes)?
+        .mark_process_resumed(&spec.id, handle.pid())
+        .map_err(process_persistence_error)?;
+    if !resumed {
+        let _ = processes.supervisor.stop(&spec.id).await;
+        return Err(GateError::new(
+            GateCode::AlreadyExists,
+            format!("process {} is no longer interrupted", request.process_id),
+        ));
+    }
+    tokio::spawn(persist_process_events(processes, handle));
+
+    Ok(Json(wire::ProcessResumeResponse {
+        process_id: request.process_id,
+        status: wire::ProcessResumeResponseStatus::Running,
     }))
 }
 
@@ -954,6 +1060,7 @@ pub fn build_router(services: HostServices) -> Router {
         .route("/process/stop", post(stop_process))
         .route("/process/list", get(list_processes))
         .route("/process/output", get(process_output))
+        .route("/process/resume", post(resume_process))
         .layer(axum::middleware::from_fn_with_state(
             services.clone(),
             transport_gate,

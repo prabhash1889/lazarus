@@ -23,7 +23,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 /// Highest migration version this binary knows how to reach. A database from
 /// a newer Host must refuse to open rather than be silently misread.
-pub const CURRENT_SCHEMA_VERSION: i64 = 2;
+pub const CURRENT_SCHEMA_VERSION: i64 = 3;
 
 /// How long a writer waits for a competing local writer before giving up.
 const BUSY_TIMEOUT_MS: u64 = 5_000;
@@ -94,6 +94,19 @@ pub const MIGRATIONS: &[Migration] = &[
                 detected_at_utc TEXT NOT NULL,
                 reason TEXT NOT NULL
             ) STRICT",
+        ],
+    },
+    Migration {
+        version: 3,
+        name: "add_process_resume_spec",
+        // The full spawn specification becomes durable so an interrupted
+        // process can be explicitly resumed after a Host restart without
+        // the original caller having to remember anything. Existing rows
+        // predate resume support and carry an empty data directory; they
+        // simply stay unresumable.
+        statements: &[
+            "ALTER TABLE supervised_processes ADD COLUMN data_dir TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE supervised_processes ADD COLUMN env_allowlist_json TEXT",
         ],
     },
 ];
@@ -177,6 +190,34 @@ pub struct StoredProcess {
     pub exit_code: Option<i64>,
     pub counters: StoredResourceCounters,
     pub dropped_output_bytes: u64,
+}
+
+/// The caller-supplied spawn description persisted before the OS process
+/// exists. Everything here becomes part of the durable specification a
+/// later Host needs for an explicit resume.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewSupervisedProcess<'a> {
+    pub id: &'a str,
+    pub program: &'a str,
+    pub args_json: &'a str,
+    pub cwd: Option<&'a str>,
+    pub run_mode: &'a str,
+    pub data_dir: &'a str,
+    pub env_allowlist_json: Option<&'a str>,
+}
+
+/// The durable spawn specification of one supervised process: everything a
+/// Host restart needs to run the same command line again on explicit resume.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredProcessSpec {
+    pub id: String,
+    pub status: String,
+    pub program: String,
+    pub args_json: String,
+    pub cwd: Option<String>,
+    pub run_mode: String,
+    pub data_dir: String,
+    pub env_allowlist: Vec<String>,
 }
 
 /// One output frame retained for replay.
@@ -270,11 +311,7 @@ impl Store {
     /// Inserts the durable `STARTING` record before the OS process is spawned.
     pub fn insert_supervised_process(
         &mut self,
-        id: &str,
-        program: &str,
-        args_json: &str,
-        cwd: Option<&str>,
-        run_mode: &str,
+        process: &NewSupervisedProcess<'_>,
     ) -> Result<(), PersistenceError> {
         let tx = self
             .conn
@@ -282,10 +319,18 @@ impl Store {
             .map_err(|source| sqlite_error("beginning process insert", source))?;
         tx.execute(
             "INSERT INTO supervised_processes
-             (id, status, program, args_json, cwd, run_mode, started_at_utc)
+             (id, status, program, args_json, cwd, run_mode, started_at_utc, data_dir, env_allowlist_json)
              VALUES (?1, 'STARTING', ?2, ?3, ?4, ?5,
-                     strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
-            params![id, program, args_json, cwd, run_mode],
+                     strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?6, ?7)",
+            params![
+                process.id,
+                process.program,
+                process.args_json,
+                process.cwd,
+                process.run_mode,
+                process.data_dir,
+                process.env_allowlist_json,
+            ],
         )
         .map_err(|source| sqlite_error("inserting supervised process", source))?;
         tx.commit()
@@ -305,6 +350,72 @@ impl Store {
         .map_err(|source| sqlite_error("marking supervised process running", source))?;
         tx.commit()
             .map_err(|source| sqlite_error("committing process start transition", source))
+    }
+
+    /// Reads the durable spawn specification for one process. Returns `None`
+    /// when no such process exists.
+    pub fn supervised_process_spec(
+        &self,
+        id: &str,
+    ) -> Result<Option<StoredProcessSpec>, PersistenceError> {
+        self.conn
+            .query_row(
+                "SELECT id, status, program, args_json, cwd, run_mode,
+                        data_dir, env_allowlist_json
+                 FROM supervised_processes WHERE id = ?1",
+                [id],
+                |row| {
+                    let raw_allowlist: Option<String> = row.get(7)?;
+                    let env_allowlist = match raw_allowlist.as_deref() {
+                        None => Vec::new(),
+                        Some(raw) => serde_json::from_str(raw).map_err(|_| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                7,
+                                rusqlite::types::Type::Text,
+                                "env_allowlist_json is not a JSON string array".into(),
+                            )
+                        })?,
+                    };
+                    Ok(StoredProcessSpec {
+                        id: row.get(0)?,
+                        status: row.get(1)?,
+                        program: row.get(2)?,
+                        args_json: row.get(3)?,
+                        cwd: row.get(4)?,
+                        run_mode: row.get(5)?,
+                        data_dir: row.get(6)?,
+                        env_allowlist,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|source| sqlite_error("reading process spawn specification", source))
+    }
+
+    /// Re-runs an interrupted process under its durable spawn specification:
+    /// back to `RUNNING` with a fresh PID and an open-ended exit, keeping
+    /// every prior output frame and interruption audit record intact.
+    /// Only a row currently in `INTERRUPTED` may be resumed; the update is a
+    /// no-op otherwise so concurrent resumes cannot double-start a process.
+    pub fn mark_process_resumed(&mut self, id: &str, pid: u32) -> Result<bool, PersistenceError> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|source| sqlite_error("beginning process resume transition", source))?;
+        let resumed = tx
+            .execute(
+                "UPDATE supervised_processes SET
+                     status = 'RUNNING',
+                     pid = ?2,
+                     exited_at_utc = NULL,
+                     exit_code = NULL
+                 WHERE id = ?1 AND status = 'INTERRUPTED'",
+                params![id, i64::from(pid)],
+            )
+            .map_err(|source| sqlite_error("resuming interrupted process", source))?;
+        tx.commit()
+            .map_err(|source| sqlite_error("committing process resume transition", source))?;
+        Ok(resumed != 0)
     }
 
     /// Records a terminal process state and the final resource counters.
@@ -820,7 +931,10 @@ mod tests {
                 .as_deref(),
             Some("from-v1")
         );
-        assert_eq!(store.schema_version().expect("schema version"), 2);
+        assert_eq!(
+            store.schema_version().expect("schema version"),
+            CURRENT_SCHEMA_VERSION
+        );
         let table_exists: i64 = store
             .conn
             .query_row(
@@ -879,7 +993,15 @@ mod tests {
         let mut store = Store::open_in_memory().expect("store");
         let id = "0198e550-c9be-7000-8000-000000000002";
         store
-            .insert_supervised_process(id, "git", r#"["status"]"#, None, "PIPED")
+            .insert_supervised_process(&NewSupervisedProcess {
+                id,
+                program: "git",
+                args_json: r#"["status"]"#,
+                cwd: None,
+                run_mode: "PIPED",
+                data_dir: "test-data",
+                env_allowlist_json: None,
+            })
             .expect("insert starting row");
         store.mark_process_running(id, 4242).expect("mark running");
         store
@@ -911,7 +1033,15 @@ mod tests {
         let mut store = Store::open_in_memory().expect("store");
         let id = "0198e550-c9be-7000-8000-000000000003";
         store
-            .insert_supervised_process(id, "echo", "[]", None, "PIPED")
+            .insert_supervised_process(&NewSupervisedProcess {
+                id,
+                program: "echo",
+                args_json: "[]",
+                cwd: None,
+                run_mode: "PIPED",
+                data_dir: "test-data",
+                env_allowlist_json: None,
+            })
             .expect("insert process");
         store
             .append_output_frame_bounded(id, 0, "STDOUT", b"abc", 5)
@@ -943,7 +1073,15 @@ mod tests {
             "0198e550-c9be-7000-8000-000000000005",
         ] {
             store
-                .insert_supervised_process(id, "sleep", "[]", None, "PIPED")
+                .insert_supervised_process(&NewSupervisedProcess {
+                    id,
+                    program: "sleep",
+                    args_json: "[]",
+                    cwd: None,
+                    run_mode: "PIPED",
+                    data_dir: "test-data",
+                    env_allowlist_json: None,
+                })
                 .expect("insert process");
         }
         store
@@ -1041,7 +1179,7 @@ mod tests {
         configure(&conn).expect("configure raw connection");
 
         let doomed = Migration {
-            version: 3,
+            version: CURRENT_SCHEMA_VERSION + 1,
             name: "doomed_step",
             statements: &[
                 "CREATE TABLE partial_artifact (id INTEGER)",
@@ -1052,16 +1190,21 @@ mod tests {
         let mut doomed_chain = MIGRATIONS.to_vec();
         doomed_chain.push(doomed);
         let error = run_migrations(&conn, &doomed_chain).expect_err("the doomed migration fails");
+        let doomed_version = CURRENT_SCHEMA_VERSION + 1;
         assert!(
-            matches!(error, PersistenceError::MigrationFailed { version: 3, .. }),
+            matches!(
+                error,
+                PersistenceError::MigrationFailed { version, .. } if version == doomed_version
+            ),
             "expected a typed migration failure, got {error}"
         );
 
-        // Nothing leaked: no ledger row for v3 and no half-created table...
+        // Nothing leaked: no ledger row for the doomed version and no
+        // half-created table...
         let leaked: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM migrations WHERE version = 3",
-                [],
+                "SELECT COUNT(*) FROM migrations WHERE version = ?1",
+                [doomed_version],
                 |row| row.get(0),
             )
             .expect("ledger query");
@@ -1077,7 +1220,7 @@ mod tests {
 
         // ...and the database still works: a corrected chain applies cleanly.
         let repaired = Migration {
-            version: 3,
+            version: CURRENT_SCHEMA_VERSION + 1,
             name: "repaired_step",
             statements: &["CREATE TABLE recovered (id INTEGER)"],
         };
@@ -1086,12 +1229,15 @@ mod tests {
         run_migrations(&conn, &repaired_chain).expect("recovery succeeds");
         drop(conn);
 
-        // The repaired file is now at schema v3, which this binary's shipped
-        // chain (v2 max) does not know: Store::open must refuse it rather
-        // than misread a newer schema.
+        // The repaired file is now one version ahead of this binary's
+        // shipped chain: Store::open must refuse it rather than misread a
+        // newer schema.
         let error = Store::open(&path).expect_err("must refuse the newer schema");
         assert!(
-            matches!(error, PersistenceError::DatabaseTooNew { on_disk: 3, .. }),
+            matches!(
+                error,
+                PersistenceError::DatabaseTooNew { on_disk, .. } if on_disk == doomed_version
+            ),
             "expected DatabaseTooNew, got {error}"
         );
         cleanup(&path);
@@ -1111,6 +1257,161 @@ mod tests {
             .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
             .expect("foreign keys pragma");
         assert_eq!(foreign_keys, 1);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn the_durable_spawn_specification_round_trips() {
+        let mut store = Store::open_in_memory().expect("store");
+        let id = "0198e550-c9be-7000-8000-000000000006";
+        store
+            .insert_supervised_process(&NewSupervisedProcess {
+                id,
+                program: "agent-cli",
+                args_json: r#"["--model","m"]"#,
+                cwd: Some("D:/project"),
+                run_mode: "PTY",
+                data_dir: "task-123",
+                env_allowlist_json: Some(r#"["PATH","HOME"]"#),
+            })
+            .expect("insert process");
+
+        let spec = store
+            .supervised_process_spec(id)
+            .expect("read spec")
+            .expect("known process");
+        assert_eq!(
+            spec,
+            StoredProcessSpec {
+                id: id.to_owned(),
+                status: "STARTING".to_owned(),
+                program: "agent-cli".to_owned(),
+                args_json: r#"["--model","m"]"#.to_owned(),
+                cwd: Some("D:/project".to_owned()),
+                run_mode: "PTY".to_owned(),
+                data_dir: "task-123".to_owned(),
+                env_allowlist: vec!["PATH".to_owned(), "HOME".to_owned()],
+            }
+        );
+        assert_eq!(
+            store
+                .supervised_process_spec("0198e550-c9be-7000-8000-000000000fff")
+                .expect("unknown process"),
+            None
+        );
+    }
+
+    #[test]
+    fn resume_reopens_only_interrupted_rows_and_preserves_history() {
+        let mut store = Store::open_in_memory().expect("store");
+        let exited_id = "0198e550-c9be-7000-8000-000000000007";
+        store
+            .insert_supervised_process(&NewSupervisedProcess {
+                id: exited_id,
+                program: "sleep",
+                args_json: "[]",
+                cwd: None,
+                run_mode: "PIPED",
+                data_dir: "data",
+                env_allowlist_json: None,
+            })
+            .expect("insert process");
+        store.mark_process_running(exited_id, 111).expect("running");
+
+        // A live process is never resumable.
+        assert!(
+            !store.mark_process_resumed(exited_id, 222).expect("guarded"),
+            "RUNNING rows must refuse resume"
+        );
+        store
+            .mark_process_finished(
+                exited_id,
+                "STOPPED",
+                Some(0),
+                &StoredResourceCounters::default(),
+            )
+            .expect("stopped");
+        assert!(
+            !store.mark_process_resumed(exited_id, 222).expect("guarded"),
+            "STOPPED rows must refuse resume"
+        );
+
+        // An interrupted row resumes: RUNNING again with a fresh PID, no
+        // exit residue, and its interruption audit still intact exactly once.
+        let interrupted_id = "0198e550-c9be-7000-8000-000000000009";
+        store
+            .insert_supervised_process(&NewSupervisedProcess {
+                id: interrupted_id,
+                program: "sleep",
+                args_json: "[]",
+                cwd: None,
+                run_mode: "PIPED",
+                data_dir: "data",
+                env_allowlist_json: None,
+            })
+            .expect("insert interrupted candidate");
+        store
+            .mark_process_running(interrupted_id, 555)
+            .expect("running");
+        assert_eq!(store.interrupt_active_processes("host died").unwrap(), 1);
+        assert!(
+            store
+                .mark_process_resumed(interrupted_id, 333)
+                .expect("resume")
+        );
+        let resumed = store
+            .list_supervised_processes()
+            .expect("list")
+            .into_iter()
+            .find(|process| process.id == interrupted_id)
+            .expect("resumed row");
+        assert_eq!(resumed.status, "RUNNING");
+        assert_eq!(resumed.exited_at, None);
+        assert_eq!(resumed.exit_code, None);
+        // A second resume attempt is a guarded no-op (already RUNNING).
+        assert!(
+            !store
+                .mark_process_resumed(interrupted_id, 444)
+                .expect("guarded")
+        );
+        let interruptions: i64 = store
+            .conn
+            .query_row("SELECT COUNT(*) FROM process_interruptions", [], |row| {
+                row.get(0)
+            })
+            .expect("interruption count");
+        assert_eq!(interruptions, 1, "resume must not rewrite audit history");
+    }
+
+    /// Migration 3 upgrades a pre-resume database in place, keeping every
+    /// existing row readable with an empty (unresumable) spawn spec.
+    #[test]
+    fn migration_three_upgrades_v2_rows_without_losing_them() {
+        let path = temp_db_path("upgrade-v2");
+        {
+            let conn = Connection::open(&path).expect("create v2 database");
+            configure(&conn).expect("configure v2 database");
+            run_migrations(&conn, &MIGRATIONS[..2]).expect("apply migrations 1-2");
+            conn.execute(
+                "INSERT INTO supervised_processes
+                 (id, status, program, args_json, cwd, run_mode, pid, started_at_utc)
+                 VALUES ('0198e550-c9be-7000-8000-000000000008', 'INTERRUPTED',
+                         'old', '[]', NULL, 'PIPED', 5, '2026-08-24T00:00:00Z')",
+                [],
+            )
+            .expect("seed v2 row");
+        }
+
+        let store = Store::open(&path).expect("upgrade v2 database");
+        assert_eq!(store.schema_version().expect("version"), 3);
+        let spec = store
+            .supervised_process_spec("0198e550-c9be-7000-8000-000000000008")
+            .expect("read upgraded row")
+            .expect("row survives");
+        assert_eq!(spec.program, "old");
+        assert_eq!(spec.status, "INTERRUPTED");
+        assert_eq!(spec.data_dir, "", "legacy rows have no stored spawn env");
+        assert!(spec.env_allowlist.is_empty());
         cleanup(&path);
     }
 
