@@ -43,7 +43,7 @@ pub struct MethodBinding {
 
 /// Manifest fingerprint over all method bindings (see header).
 pub const MANIFEST_FINGERPRINT: &str =
-    "c067c87954bc1132ed27ad7b8edc2c114afdc8d7f159f17cce106f7ec906ac00";
+    "b223cb9f1c8a8e196d9eb3275723ffd487cf863e1aa0c5addaaca2ec320e6e7d";
 
 /// Generated method bindings, sorted by name.
 pub const METHOD_BINDINGS: &[MethodBinding] = &[
@@ -66,6 +66,16 @@ pub const METHOD_BINDINGS: &[MethodBinding] = &[
         fallback: None,
         request_fingerprint: "9b340e5d34ea0ba220224f82203840743d162cd1a786d9b6cf4565af2b80c7b8",
         response_fingerprint: "74ef7acb510bc418a867f511f39f21f3530fc641f378d2225eb1ccd43c5d41a7",
+    },
+    MethodBinding {
+        name: "process.resume",
+        kind: MethodKind::Unary,
+        major: 1,
+        minor: 0,
+        optional: false,
+        fallback: None,
+        request_fingerprint: "e665213730d897cc7ca7fa18fa86540f075d4a74b612dd8ddc375903bccb2b33",
+        response_fingerprint: "30ac63f7dd3e6f1de9379e7897af0166ea4cb4ca3e2f05146360133ffd0a555f",
     },
     MethodBinding {
         name: "process.start",
@@ -143,6 +153,7 @@ pub const METHOD_BINDINGS: &[MethodBinding] = &[
 pub const RELEASED_FLOOR: &[&str] = &[
     "process.list",
     "process.output",
+    "process.resume",
     "process.start",
     "process.stop",
     "system.getInfo",
@@ -554,6 +565,67 @@ pub mod wire {
             let v = &self.next_offset;
             if *v > 9007199254740991 {
                 return Err("nextOffset: must be at most 9007199254740991".to_string());
+            }
+            Ok(())
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    pub struct ProcessResumeRequest {
+        #[serde(rename = "processId")]
+        pub process_id: String,
+    }
+
+    impl ProcessResumeRequest {
+        /// Enforces exactly the constraints carried by the contract schema.
+        pub fn validate(&self) -> Result<(), String> {
+            let v = &self.process_id;
+            if !is_uuid_v7(v) {
+                return Err("processId: must be a UUIDv7 string".to_string());
+            }
+            Ok(())
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+    pub enum ProcessResumeResponseStatus {
+        #[serde(rename = "STARTING")]
+        Starting,
+        #[serde(rename = "RUNNING")]
+        Running,
+        #[serde(rename = "EXITED")]
+        Exited,
+        #[serde(rename = "STOPPED")]
+        Stopped,
+        #[serde(rename = "INTERRUPTED")]
+        Interrupted,
+    }
+
+    impl ProcessResumeResponseStatus {
+        pub fn as_str(self) -> &'static str {
+            match self {
+                Self::Starting => "STARTING",
+                Self::Running => "RUNNING",
+                Self::Exited => "EXITED",
+                Self::Stopped => "STOPPED",
+                Self::Interrupted => "INTERRUPTED",
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    pub struct ProcessResumeResponse {
+        #[serde(rename = "processId")]
+        pub process_id: String,
+        pub status: ProcessResumeResponseStatus,
+    }
+
+    impl ProcessResumeResponse {
+        /// Enforces exactly the constraints carried by the contract schema.
+        pub fn validate(&self) -> Result<(), String> {
+            let v = &self.process_id;
+            if !is_uuid_v7(v) {
+                return Err("processId: must be a UUIDv7 string".to_string());
             }
             Ok(())
         }
@@ -1074,6 +1146,30 @@ pub mod wire {
         decoded
             .validate()
             .map_err(|reason| WireDecodeError::new("process.output response", reason))?;
+        Ok(decoded)
+    }
+
+    /// Decodes and validates a `process.resume` request payload produced by any peer.
+    pub fn decode_process_resume_request(
+        value: &serde_json::Value,
+    ) -> Result<ProcessResumeRequest, WireDecodeError> {
+        let decoded: ProcessResumeRequest = serde_json::from_value(value.clone())
+            .map_err(|error| WireDecodeError::new("process.resume request", error.to_string()))?;
+        decoded
+            .validate()
+            .map_err(|reason| WireDecodeError::new("process.resume request", reason))?;
+        Ok(decoded)
+    }
+
+    /// Decodes and validates a `process.resume` response payload produced by any peer.
+    pub fn decode_process_resume_response(
+        value: &serde_json::Value,
+    ) -> Result<ProcessResumeResponse, WireDecodeError> {
+        let decoded: ProcessResumeResponse = serde_json::from_value(value.clone())
+            .map_err(|error| WireDecodeError::new("process.resume response", error.to_string()))?;
+        decoded
+            .validate()
+            .map_err(|reason| WireDecodeError::new("process.resume response", reason))?;
         Ok(decoded)
     }
 

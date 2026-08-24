@@ -59,6 +59,7 @@ describe('method manifest', () => {
     assert.deepEqual(names, [
       'process.list',
       'process.output',
+      'process.resume',
       'process.start',
       'process.stop',
       'system.getInfo',
@@ -779,7 +780,7 @@ describe('optional method support resolution', () => {
 describe('released floor', () => {
   it('is fully present in the current registry at or above floor versions', () => {
     assert.deepEqual(releasedFloorGaps(), []);
-    assert.equal(RELEASED_FLOOR.size, 9);
+    assert.equal(RELEASED_FLOOR.size, 10);
   });
 
   it('snapshots to exactly the floor methods', () => {
@@ -787,6 +788,7 @@ describe('released floor', () => {
     assert.deepEqual(snapshot.methods.map((m) => m.name).sort(), [
       'process.list',
       'process.output',
+      'process.resume',
       'process.start',
       'process.stop',
       'system.getInfo',

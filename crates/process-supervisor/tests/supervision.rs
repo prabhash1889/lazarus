@@ -195,6 +195,9 @@ async fn stop_uses_the_configured_timeout() {
     let started = Instant::now();
     supervisor.stop("configured").await.expect("stop helper");
     let elapsed = started.elapsed();
+    // Windows has no provider-neutral graceful signal, so it waits out the
+    // configured grace period. Unix sends SIGTERM and may exit immediately.
+    #[cfg(windows)]
     assert!(elapsed >= Duration::from_millis(75));
     assert!(elapsed < Duration::from_secs(1));
 

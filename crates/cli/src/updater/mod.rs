@@ -246,9 +246,6 @@ impl Updater {
             expected_sha256: artifact.sha256.clone(),
             expected_size: artifact.size_bytes,
         };
-        // Record intent before the first byte lands so any interruption
-        // leaves resumable state behind rather than orphan bytes.
-        download::persist_partial_meta(&request)?;
         let completed = download::download_resumable(&self.http, &request).await?;
         if completed.resumed_from > 0 {
             tracing::info!(
@@ -274,6 +271,7 @@ impl Updater {
         fs::copy(downloaded, &target).with_context(|| {
             format!("staging {} into {}", downloaded.display(), target.display())
         })?;
+        make_executable(&target)?;
         // Re-verify the staged copy: promotion must move exactly the bytes
         // the manifest checksummed, even if something raced the cache file.
         let staged_digest = download::hash_file(&target).context("hashing the staged artifact")?;
@@ -336,6 +334,23 @@ impl Updater {
         fs::remove_file(install.join("lazarus-staged.json")).ok();
         Ok(previous)
     }
+}
+
+#[cfg(unix)]
+fn make_executable(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut permissions = fs::metadata(path)
+        .with_context(|| format!("reading permissions for {}", path.display()))?
+        .permissions();
+    permissions.set_mode(permissions.mode() | 0o111);
+    fs::set_permissions(path, permissions)
+        .with_context(|| format!("making {} executable", path.display()))
+}
+
+#[cfg(not(unix))]
+fn make_executable(_path: &Path) -> Result<()> {
+    Ok(())
 }
 
 async fn load_and_verify_manifest(

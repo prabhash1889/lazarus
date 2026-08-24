@@ -614,6 +614,7 @@ mod tests {
         let peer = manifest(&[
             ("process.list", 1, 0),
             ("process.output", 1, 0),
+            ("process.resume", 1, 0),
             ("process.start", 1, 0),
             ("process.stop", 1, 0),
             ("system.getInfo", 1, 0),

@@ -21,7 +21,7 @@ fn method_fixture(name: &str, role: &str) -> serde_json::Value {
 fn generated_decoders_accept_every_typescript_validated_fixture() {
     let fixtures = fixtures();
     let methods = fixtures["methods"].as_object().expect("methods map");
-    assert_eq!(methods.len(), 9);
+    assert_eq!(methods.len(), 10);
 
     for (name, entry) in methods {
         // Both decoders are erased to Result<(), _> so every arm shares one
@@ -34,6 +34,10 @@ fn generated_decoders_accept_every_typescript_validated_fixture() {
             "process.output" => (
                 wire::decode_process_output_request(&entry["request"]).map(|_| ()),
                 wire::decode_process_output_response(&entry["response"]).map(|_| ()),
+            ),
+            "process.resume" => (
+                wire::decode_process_resume_request(&entry["request"]).map(|_| ()),
+                wire::decode_process_resume_response(&entry["response"]).map(|_| ()),
             ),
             "process.start" => (
                 wire::decode_process_start_request(&entry["request"]).map(|_| ()),

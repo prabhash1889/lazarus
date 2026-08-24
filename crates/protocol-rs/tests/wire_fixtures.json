@@ -14,6 +14,13 @@
       },
       "response": { "frames": [], "nextOffset": 0, "truncated": true }
     },
+    "process.resume": {
+      "request": { "processId": "0198e550-c9be-7000-8000-000000000001" },
+      "response": {
+        "processId": "0198e550-c9be-7000-8000-000000000001",
+        "status": "STARTING"
+      }
+    },
     "process.start": {
       "request": {
         "processId": "0198e550-c9be-7000-8000-000000000001",
