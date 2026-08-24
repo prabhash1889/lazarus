@@ -7,6 +7,8 @@ use std::time::Duration;
 
 use lazarus_hostd::{HostServices, HostState, LAST_OUTAGE_HEADER};
 use protocol_rs::auth::{self, bearer_header};
+use protocol_rs::deadline::{DEFAULT_RPC_BUDGET_MS, Deadline};
+use protocol_rs::generated_registry::wire;
 use protocol_rs::manifest::{
     MANIFEST_METADATA_KEY, MethodManifest, host_manifest, host_manifest_encoded,
 };
@@ -51,12 +53,14 @@ impl HttpResponse {
 }
 
 /// Issues a raw HTTP/1.1 GET with optional `Authorization` and manifest
-/// headers and reads the full response (the request closes the connection).
-async fn get(
+/// headers plus any extra contract headers, and reads the full response
+/// (the request closes the connection).
+async fn get_with_extras(
     addr: SocketAddr,
     path: &str,
     authorization: Option<&str>,
     manifest: Option<&str>,
+    extras: &[(&str, String)],
 ) -> HttpResponse {
     let mut stream = tokio::net::TcpStream::connect(addr)
         .await
@@ -68,6 +72,9 @@ async fn get(
     if let Some(manifest) = manifest {
         request.push_str(&format!("{MANIFEST_METADATA_KEY}: {manifest}\r\n"));
     }
+    for (name, value) in extras {
+        request.push_str(&format!("{name}: {value}\r\n"));
+    }
     request.push_str("\r\n");
 
     stream
@@ -77,6 +84,17 @@ async fn get(
     let mut raw = Vec::new();
     stream.read_to_end(&mut raw).await.expect("read response");
     parse_response(&raw)
+}
+
+/// Issues a raw HTTP/1.1 GET with optional `Authorization` and manifest
+/// headers and reads the full response (the request closes the connection).
+async fn get(
+    addr: SocketAddr,
+    path: &str,
+    authorization: Option<&str>,
+    manifest: Option<&str>,
+) -> HttpResponse {
+    get_with_extras(addr, path, authorization, manifest, &[]).await
 }
 
 fn parse_response(raw: &[u8]) -> HttpResponse {
@@ -759,4 +777,104 @@ async fn sse_requires_auth_and_manifest() {
             .expect("message")
             .contains("system.subscribeEvents")
     );
+}
+
+/// The cancellation/deadline contract is enforced operationally end to end:
+/// an already-elapsed deadline is a typed 504 DEADLINE_EXCEEDED before any
+/// handler runs, a malformed header is a typed 400, and a healthy future
+/// deadline passes straight through.
+#[tokio::test(flavor = "multi_thread")]
+async fn deadlines_are_enforced_with_typed_canonical_errors() {
+    let (addr, _state) = spawn_host().await;
+    let now = protocol_rs::deadline::unix_now_ms();
+
+    // Elapsed budget: immediate typed DEADLINE_EXCEEDED (and the canonical
+    // envelope marks it retryable).
+    let elapsed = get_with_extras(
+        addr,
+        "/tasks",
+        Some(valid_auth_header()),
+        Some(host_manifest_encoded()),
+        &[(
+            protocol_rs::deadline::DEADLINE_HEADER,
+            (now - 1_000).to_string(),
+        )],
+    )
+    .await;
+    assert_eq!(elapsed.status, 504);
+    let body = wire::decode_protocol_error(&elapsed.body_json()).expect("canonical envelope");
+    assert_eq!(body.code.as_str(), "DEADLINE_EXCEEDED");
+    assert!(body.retryable);
+
+    // Malformed value: typed INVALID_ARGUMENT, never silently ignored.
+    let malformed = get_with_extras(
+        addr,
+        "/tasks",
+        Some(valid_auth_header()),
+        Some(host_manifest_encoded()),
+        &[(protocol_rs::deadline::DEADLINE_HEADER, "soon".to_string())],
+    )
+    .await;
+    assert_eq!(malformed.status, 400);
+    assert_eq!(malformed.body_json()["code"], "INVALID_ARGUMENT");
+
+    // A healthy deadline within the shared client budget serves normally.
+    let healthy = get_with_extras(
+        addr,
+        "/tasks",
+        Some(valid_auth_header()),
+        Some(host_manifest_encoded()),
+        &[(
+            protocol_rs::deadline::DEADLINE_HEADER,
+            Deadline::header_from_budget(now, DEFAULT_RPC_BUDGET_MS),
+        )],
+    )
+    .await;
+    assert_eq!(healthy.status, 200);
+    assert_advertises_host_manifest(&healthy);
+}
+
+/// Unknown additive fields are tolerated at the boundary: a live Host
+/// response carrying an extra v-next field still decodes through the
+/// generated bindings of a current client.
+#[tokio::test(flavor = "multi_thread")]
+async fn live_responses_tolerate_unknown_additive_fields_end_to_end() {
+    let (addr, _state) = spawn_host().await;
+
+    let tasks = get_authed(addr, "/tasks").await;
+    assert_eq!(tasks.status, 200);
+    let mut body = tasks.body_json();
+    body["futureAdditiveField"] = serde_json::json!({"anything": true});
+    let decoded = wire::decode_task_list_response(&body).expect("additive tolerated");
+    assert!(decoded.tasks.is_empty());
+
+    // The same holds for the error path: gate rejections decode through the
+    // generated error envelope with canonical retryability.
+    let rejected = get(addr, "/system/health", None, None).await;
+    assert_eq!(rejected.status, 401);
+    let error = wire::decode_protocol_error(&rejected.body_json()).expect("canonical");
+    assert_eq!(error.code.as_str(), "UNAUTHENTICATED");
+    assert!(!error.retryable);
+}
+
+/// In-contract query parameters are accepted; out-of-contract ones are
+/// rejected by the generated request validation before handlers run.
+#[tokio::test(flavor = "multi_thread")]
+async fn task_list_query_binds_to_the_generated_request_contract() {
+    let (addr, _state) = spawn_host().await;
+
+    let ok = get_authed(addr, "/tasks?pageSize=10&cursor=abc").await;
+    assert_eq!(ok.status, 200);
+
+    let too_large = get_authed(addr, "/tasks?pageSize=101").await;
+    assert_eq!(too_large.status, 400);
+    assert_eq!(too_large.body_json()["code"], "INVALID_ARGUMENT");
+
+    let zero = get_authed(addr, "/tasks?pageSize=0").await;
+    assert_eq!(zero.status, 400);
+    assert_eq!(zero.body_json()["code"], "INVALID_ARGUMENT");
+
+    let wrong_type = get_authed(addr, "/tasks?pageSize=abc").await;
+    assert_eq!(wrong_type.status, 400);
+    assert_eq!(wrong_type.body_json()["code"], "INVALID_ARGUMENT");
 }

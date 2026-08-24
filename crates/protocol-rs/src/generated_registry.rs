@@ -6,7 +6,9 @@
 // The manifest fingerprint equals the SHA-256 of the canonical JSON of the
 // sorted method snapshots computed by the TypeScript registry
 // (`snapshotManifest()`); the golden copy used for verification lives at
-// crates/protocol-rs/tests/protocol_manifest.json.
+// crates/protocol-rs/tests/protocol_manifest.json. Canonical sample payloads
+// for the generated wire decoders live at
+// crates/protocol-rs/tests/wire_fixtures.json.
 
 /// Transport shape of a protocol method.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -168,6 +170,571 @@ pub fn binding_by_name(name: &str) -> Option<&'static MethodBinding> {
     METHOD_BINDINGS.iter().find(|binding| binding.name == name)
 }
 
+/// Generated wire bindings for every protocol method payload and the
+/// shared error envelope, derived from the same TypeScript/Zod schemas as
+/// the manifest above. Decoders enforce required fields and reject wrong
+/// types (via serde) plus every schema constraint (via `validate()`),
+/// while unknown additive fields pass through untouched - exactly like the
+/// TypeScript clients. Canonical sample payloads live at
+/// crates/protocol-rs/tests/wire_fixtures.json. Do not edit by hand.
+pub mod wire {
+    use std::collections::HashMap;
+
+    /// Why a wire payload failed to decode or violated its contract.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct WireDecodeError {
+        /// Which payload failed, e.g. `"task.list response"`.
+        pub payload: &'static str,
+        pub reason: String,
+    }
+
+    impl WireDecodeError {
+        pub(crate) fn new(payload: &'static str, reason: impl Into<String>) -> Self {
+            Self {
+                payload,
+                reason: reason.into(),
+            }
+        }
+    }
+
+    impl std::fmt::Display for WireDecodeError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{} payload is invalid: {}", self.payload, self.reason)
+        }
+    }
+
+    impl std::error::Error for WireDecodeError {}
+
+    /// Major version of the versioned error-envelope contract
+    /// (`protocol.error`), frozen in the released-contract baseline like
+    /// every method payload.
+    pub const ERROR_ENVELOPE_MAJOR: u32 = 1;
+    /// Minor version of the versioned error-envelope contract.
+    pub const ERROR_ENVELOPE_MINOR: u32 = 0;
+    /// SHA-256 (hex) of the canonical JSON Schema of the error envelope.
+    pub const ERROR_ENVELOPE_FINGERPRINT: &str =
+        "415bfc21eb785cd03b3ccbb20466946a00ea79df04233b129ae708d91ba9619a";
+
+    /// The typed wire error envelope (`protocol.error`).
+    #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    pub struct ProtocolError {
+        pub code: ProtocolErrorCode,
+        pub message: String,
+        pub retryable: bool,
+    }
+
+    /// Every canonical error code, generated from the TypeScript schema.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+    pub enum ProtocolErrorCode {
+        #[serde(rename = "ALREADY_EXISTS")]
+        AlreadyExists,
+        #[serde(rename = "CANCELLED")]
+        Cancelled,
+        #[serde(rename = "DEADLINE_EXCEEDED")]
+        DeadlineExceeded,
+        #[serde(rename = "FAILED_PRECONDITION")]
+        FailedPrecondition,
+        #[serde(rename = "INCOMPATIBLE_METHOD_MANIFEST")]
+        IncompatibleMethodManifest,
+        #[serde(rename = "INTERNAL")]
+        Internal,
+        #[serde(rename = "INVALID_ARGUMENT")]
+        InvalidArgument,
+        #[serde(rename = "NOT_FOUND")]
+        NotFound,
+        #[serde(rename = "PERMISSION_DENIED")]
+        PermissionDenied,
+        #[serde(rename = "UNAUTHENTICATED")]
+        Unauthenticated,
+        #[serde(rename = "UNAVAILABLE")]
+        Unavailable,
+        #[serde(rename = "UNKNOWN")]
+        Unknown,
+    }
+
+    impl ProtocolErrorCode {
+        pub fn as_str(self) -> &'static str {
+            match self {
+                Self::AlreadyExists => "ALREADY_EXISTS",
+                Self::Cancelled => "CANCELLED",
+                Self::DeadlineExceeded => "DEADLINE_EXCEEDED",
+                Self::FailedPrecondition => "FAILED_PRECONDITION",
+                Self::IncompatibleMethodManifest => "INCOMPATIBLE_METHOD_MANIFEST",
+                Self::Internal => "INTERNAL",
+                Self::InvalidArgument => "INVALID_ARGUMENT",
+                Self::NotFound => "NOT_FOUND",
+                Self::PermissionDenied => "PERMISSION_DENIED",
+                Self::Unauthenticated => "UNAUTHENTICATED",
+                Self::Unavailable => "UNAVAILABLE",
+                Self::Unknown => "UNKNOWN",
+            }
+        }
+
+        /// True when the canonical classification marks the code retryable:
+        /// re-issuing the call (idempotency-keyed where it writes) may
+        /// succeed. Every other code is terminal.
+        pub fn is_retryable(self) -> bool {
+            matches!(self, Self::DeadlineExceeded | Self::Unavailable)
+        }
+    }
+
+    impl ProtocolError {
+        /// Builds a conforming envelope: `retryable` always comes from the
+        /// canonical classification so call sites cannot mislabel an error.
+        pub fn new(code: ProtocolErrorCode, message: impl Into<String>) -> Self {
+            Self {
+                retryable: code.is_retryable(),
+                code,
+                message: message.into(),
+            }
+        }
+    }
+
+    /// Decodes and validates an error envelope received from a peer.
+    pub fn decode_protocol_error(
+        value: &serde_json::Value,
+    ) -> Result<ProtocolError, WireDecodeError> {
+        let decoded: ProtocolError = serde_json::from_value(value.clone())
+            .map_err(|error| WireDecodeError::new("protocol.error", error.to_string()))?;
+        Ok(decoded)
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    pub struct SystemGetInfoRequest {}
+
+    impl SystemGetInfoRequest {
+        /// Enforces exactly the constraints carried by the contract schema.
+        pub fn validate(&self) -> Result<(), String> {
+            // No constraints beyond serde's decoding.
+            Ok(())
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    pub struct SystemGetInfoResponse {
+        pub capabilities: HashMap<String, bool>,
+        #[serde(rename = "hostVersion")]
+        pub host_version: String,
+    }
+
+    impl SystemGetInfoResponse {
+        /// Enforces exactly the constraints carried by the contract schema.
+        pub fn validate(&self) -> Result<(), String> {
+            // No constraints beyond serde's decoding.
+            Ok(())
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    pub struct SystemHealthRequest {}
+
+    impl SystemHealthRequest {
+        /// Enforces exactly the constraints carried by the contract schema.
+        pub fn validate(&self) -> Result<(), String> {
+            // No constraints beyond serde's decoding.
+            Ok(())
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+    pub enum SystemHealthResponseStatus {
+        #[serde(rename = "SERVING")]
+        Serving,
+        #[serde(rename = "NOT_SERVING")]
+        NotServing,
+    }
+
+    impl SystemHealthResponseStatus {
+        pub fn as_str(self) -> &'static str {
+            match self {
+                Self::Serving => "SERVING",
+                Self::NotServing => "NOT_SERVING",
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    pub struct SystemHealthResponse {
+        pub status: SystemHealthResponseStatus,
+    }
+
+    impl SystemHealthResponse {
+        /// Enforces exactly the constraints carried by the contract schema.
+        pub fn validate(&self) -> Result<(), String> {
+            // No constraints beyond serde's decoding.
+            Ok(())
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    pub struct SystemSubscribeEventsRequest {}
+
+    impl SystemSubscribeEventsRequest {
+        /// Enforces exactly the constraints carried by the contract schema.
+        pub fn validate(&self) -> Result<(), String> {
+            // No constraints beyond serde's decoding.
+            Ok(())
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    pub struct SystemSubscribeEventsResponseSnapshotTasksItem {
+        pub id: String,
+        pub title: String,
+        #[serde(rename = "workspaceId")]
+        pub workspace_id: String,
+    }
+
+    impl SystemSubscribeEventsResponseSnapshotTasksItem {
+        /// Enforces exactly the constraints carried by the contract schema.
+        pub fn validate(&self) -> Result<(), String> {
+            // No constraints beyond serde's decoding.
+            Ok(())
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    pub struct SystemSubscribeEventsResponseSnapshotWorkspacesItem {
+        pub id: String,
+        pub name: String,
+    }
+
+    impl SystemSubscribeEventsResponseSnapshotWorkspacesItem {
+        /// Enforces exactly the constraints carried by the contract schema.
+        pub fn validate(&self) -> Result<(), String> {
+            // No constraints beyond serde's decoding.
+            Ok(())
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    #[serde(
+        tag = "type",
+        rename_all = "camelCase",
+        rename_all_fields = "camelCase"
+    )]
+    pub enum SystemSubscribeEventsResponse {
+        Outage {
+            outage_id: String,
+        },
+        Snapshot {
+            tasks: Vec<SystemSubscribeEventsResponseSnapshotTasksItem>,
+            workspaces: Vec<SystemSubscribeEventsResponseSnapshotWorkspacesItem>,
+        },
+        Live {
+            sequence: u64,
+        },
+    }
+
+    impl SystemSubscribeEventsResponse {
+        /// Enforces exactly the constraints carried by the contract schema.
+        pub fn validate(&self) -> Result<(), String> {
+            match self {
+                Self::Outage { outage_id } => {
+                    if outage_id.is_empty() {
+                        return Err("outageId: must be at least 1 characters".to_string());
+                    }
+                    Ok(())
+                }
+                Self::Snapshot { .. } => Ok(()),
+                Self::Live { sequence } => {
+                    if *sequence > 9007199254740991 {
+                        return Err("sequence: must be at most 9007199254740991".to_string());
+                    }
+                    Ok(())
+                }
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    pub struct TaskListRequest {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub cursor: Option<String>,
+        #[serde(rename = "pageSize", skip_serializing_if = "Option::is_none")]
+        pub page_size: Option<u64>,
+    }
+
+    impl TaskListRequest {
+        /// Enforces exactly the constraints carried by the contract schema.
+        pub fn validate(&self) -> Result<(), String> {
+            if self.page_size.as_ref().is_some_and(|v| *v < 1) {
+                return Err("pageSize: must be at least 1".to_string());
+            }
+            if self.page_size.as_ref().is_some_and(|v| *v > 100) {
+                return Err("pageSize: must be at most 100".to_string());
+            }
+            Ok(())
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    pub struct TaskListResponsePagination {
+        #[serde(rename = "nextCursor", skip_serializing_if = "Option::is_none")]
+        pub next_cursor: Option<String>,
+    }
+
+    impl TaskListResponsePagination {
+        /// Enforces exactly the constraints carried by the contract schema.
+        pub fn validate(&self) -> Result<(), String> {
+            // No constraints beyond serde's decoding.
+            Ok(())
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+    pub enum TaskListResponseTasksItemStatus {
+        #[serde(rename = "PENDING")]
+        Pending,
+        #[serde(rename = "RUNNING")]
+        Running,
+        #[serde(rename = "COMPLETED")]
+        Completed,
+        #[serde(rename = "FAILED")]
+        Failed,
+        #[serde(rename = "CANCELLED")]
+        Cancelled,
+    }
+
+    impl TaskListResponseTasksItemStatus {
+        pub fn as_str(self) -> &'static str {
+            match self {
+                Self::Pending => "PENDING",
+                Self::Running => "RUNNING",
+                Self::Completed => "COMPLETED",
+                Self::Failed => "FAILED",
+                Self::Cancelled => "CANCELLED",
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    pub struct TaskListResponseTasksItem {
+        pub id: String,
+        pub status: TaskListResponseTasksItemStatus,
+        pub title: String,
+    }
+
+    impl TaskListResponseTasksItem {
+        /// Enforces exactly the constraints carried by the contract schema.
+        pub fn validate(&self) -> Result<(), String> {
+            // No constraints beyond serde's decoding.
+            Ok(())
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    pub struct TaskListResponse {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub pagination: Option<TaskListResponsePagination>,
+        #[serde(rename = "servedAtUnixMs", skip_serializing_if = "Option::is_none")]
+        pub served_at_unix_ms: Option<u64>,
+        pub tasks: Vec<TaskListResponseTasksItem>,
+    }
+
+    impl TaskListResponse {
+        /// Enforces exactly the constraints carried by the contract schema.
+        pub fn validate(&self) -> Result<(), String> {
+            if self
+                .served_at_unix_ms
+                .as_ref()
+                .is_some_and(|v| *v > 9007199254740991)
+            {
+                return Err("servedAtUnixMs: must be at most 9007199254740991".to_string());
+            }
+            Ok(())
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    pub struct WorkspaceListRequest {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub cursor: Option<String>,
+        #[serde(rename = "pageSize", skip_serializing_if = "Option::is_none")]
+        pub page_size: Option<u64>,
+    }
+
+    impl WorkspaceListRequest {
+        /// Enforces exactly the constraints carried by the contract schema.
+        pub fn validate(&self) -> Result<(), String> {
+            if self.page_size.as_ref().is_some_and(|v| *v < 1) {
+                return Err("pageSize: must be at least 1".to_string());
+            }
+            if self.page_size.as_ref().is_some_and(|v| *v > 100) {
+                return Err("pageSize: must be at most 100".to_string());
+            }
+            Ok(())
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    pub struct WorkspaceListResponsePagination {
+        #[serde(rename = "nextCursor", skip_serializing_if = "Option::is_none")]
+        pub next_cursor: Option<String>,
+    }
+
+    impl WorkspaceListResponsePagination {
+        /// Enforces exactly the constraints carried by the contract schema.
+        pub fn validate(&self) -> Result<(), String> {
+            // No constraints beyond serde's decoding.
+            Ok(())
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    pub struct WorkspaceListResponseWorkspacesItem {
+        pub id: String,
+        pub name: String,
+        pub path: String,
+    }
+
+    impl WorkspaceListResponseWorkspacesItem {
+        /// Enforces exactly the constraints carried by the contract schema.
+        pub fn validate(&self) -> Result<(), String> {
+            // No constraints beyond serde's decoding.
+            Ok(())
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    pub struct WorkspaceListResponse {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub pagination: Option<WorkspaceListResponsePagination>,
+        pub workspaces: Vec<WorkspaceListResponseWorkspacesItem>,
+    }
+
+    impl WorkspaceListResponse {
+        /// Enforces exactly the constraints carried by the contract schema.
+        pub fn validate(&self) -> Result<(), String> {
+            // No constraints beyond serde's decoding.
+            Ok(())
+        }
+    }
+    /// Decodes and validates a `system.getInfo` request payload produced by any peer.
+    pub fn decode_system_get_info_request(
+        value: &serde_json::Value,
+    ) -> Result<SystemGetInfoRequest, WireDecodeError> {
+        let decoded: SystemGetInfoRequest = serde_json::from_value(value.clone())
+            .map_err(|error| WireDecodeError::new("system.getInfo request", error.to_string()))?;
+        decoded
+            .validate()
+            .map_err(|reason| WireDecodeError::new("system.getInfo request", reason))?;
+        Ok(decoded)
+    }
+
+    /// Decodes and validates a `system.getInfo` response payload produced by any peer.
+    pub fn decode_system_get_info_response(
+        value: &serde_json::Value,
+    ) -> Result<SystemGetInfoResponse, WireDecodeError> {
+        let decoded: SystemGetInfoResponse = serde_json::from_value(value.clone())
+            .map_err(|error| WireDecodeError::new("system.getInfo response", error.to_string()))?;
+        decoded
+            .validate()
+            .map_err(|reason| WireDecodeError::new("system.getInfo response", reason))?;
+        Ok(decoded)
+    }
+
+    /// Decodes and validates a `system.health` request payload produced by any peer.
+    pub fn decode_system_health_request(
+        value: &serde_json::Value,
+    ) -> Result<SystemHealthRequest, WireDecodeError> {
+        let decoded: SystemHealthRequest = serde_json::from_value(value.clone())
+            .map_err(|error| WireDecodeError::new("system.health request", error.to_string()))?;
+        decoded
+            .validate()
+            .map_err(|reason| WireDecodeError::new("system.health request", reason))?;
+        Ok(decoded)
+    }
+
+    /// Decodes and validates a `system.health` response payload produced by any peer.
+    pub fn decode_system_health_response(
+        value: &serde_json::Value,
+    ) -> Result<SystemHealthResponse, WireDecodeError> {
+        let decoded: SystemHealthResponse = serde_json::from_value(value.clone())
+            .map_err(|error| WireDecodeError::new("system.health response", error.to_string()))?;
+        decoded
+            .validate()
+            .map_err(|reason| WireDecodeError::new("system.health response", reason))?;
+        Ok(decoded)
+    }
+
+    /// Decodes and validates a `system.subscribeEvents` request payload produced by any peer.
+    pub fn decode_system_subscribe_events_request(
+        value: &serde_json::Value,
+    ) -> Result<SystemSubscribeEventsRequest, WireDecodeError> {
+        let decoded: SystemSubscribeEventsRequest =
+            serde_json::from_value(value.clone()).map_err(|error| {
+                WireDecodeError::new("system.subscribeEvents request", error.to_string())
+            })?;
+        decoded
+            .validate()
+            .map_err(|reason| WireDecodeError::new("system.subscribeEvents request", reason))?;
+        Ok(decoded)
+    }
+
+    /// Decodes and validates a `system.subscribeEvents` response payload produced by any peer.
+    pub fn decode_system_subscribe_events_response(
+        value: &serde_json::Value,
+    ) -> Result<SystemSubscribeEventsResponse, WireDecodeError> {
+        let decoded: SystemSubscribeEventsResponse = serde_json::from_value(value.clone())
+            .map_err(|error| {
+                WireDecodeError::new("system.subscribeEvents response", error.to_string())
+            })?;
+        decoded
+            .validate()
+            .map_err(|reason| WireDecodeError::new("system.subscribeEvents response", reason))?;
+        Ok(decoded)
+    }
+
+    /// Decodes and validates a `task.list` request payload produced by any peer.
+    pub fn decode_task_list_request(
+        value: &serde_json::Value,
+    ) -> Result<TaskListRequest, WireDecodeError> {
+        let decoded: TaskListRequest = serde_json::from_value(value.clone())
+            .map_err(|error| WireDecodeError::new("task.list request", error.to_string()))?;
+        decoded
+            .validate()
+            .map_err(|reason| WireDecodeError::new("task.list request", reason))?;
+        Ok(decoded)
+    }
+
+    /// Decodes and validates a `task.list` response payload produced by any peer.
+    pub fn decode_task_list_response(
+        value: &serde_json::Value,
+    ) -> Result<TaskListResponse, WireDecodeError> {
+        let decoded: TaskListResponse = serde_json::from_value(value.clone())
+            .map_err(|error| WireDecodeError::new("task.list response", error.to_string()))?;
+        decoded
+            .validate()
+            .map_err(|reason| WireDecodeError::new("task.list response", reason))?;
+        Ok(decoded)
+    }
+
+    /// Decodes and validates a `workspace.list` request payload produced by any peer.
+    pub fn decode_workspace_list_request(
+        value: &serde_json::Value,
+    ) -> Result<WorkspaceListRequest, WireDecodeError> {
+        let decoded: WorkspaceListRequest = serde_json::from_value(value.clone())
+            .map_err(|error| WireDecodeError::new("workspace.list request", error.to_string()))?;
+        decoded
+            .validate()
+            .map_err(|reason| WireDecodeError::new("workspace.list request", reason))?;
+        Ok(decoded)
+    }
+
+    /// Decodes and validates a `workspace.list` response payload produced by any peer.
+    pub fn decode_workspace_list_response(
+        value: &serde_json::Value,
+    ) -> Result<WorkspaceListResponse, WireDecodeError> {
+        let decoded: WorkspaceListResponse = serde_json::from_value(value.clone())
+            .map_err(|error| WireDecodeError::new("workspace.list response", error.to_string()))?;
+        decoded
+            .validate()
+            .map_err(|reason| WireDecodeError::new("workspace.list response", reason))?;
+        Ok(decoded)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -214,6 +781,7 @@ mod tests {
                 assert!(binding.optional, "only optional methods declare fallbacks");
             }
         }
+        assert_eq!(wire::ERROR_ENVELOPE_FINGERPRINT.len(), 64);
     }
 
     #[test]
@@ -288,5 +856,47 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn error_envelope_labels_retryability_from_the_canonical_classification() {
+        assert!(wire::ProtocolErrorCode::Unavailable.is_retryable());
+        assert!(wire::ProtocolErrorCode::DeadlineExceeded.is_retryable());
+        for terminal in [
+            wire::ProtocolErrorCode::Cancelled,
+            wire::ProtocolErrorCode::Unknown,
+            wire::ProtocolErrorCode::InvalidArgument,
+            wire::ProtocolErrorCode::NotFound,
+            wire::ProtocolErrorCode::AlreadyExists,
+            wire::ProtocolErrorCode::PermissionDenied,
+            wire::ProtocolErrorCode::Unauthenticated,
+            wire::ProtocolErrorCode::FailedPrecondition,
+            wire::ProtocolErrorCode::IncompatibleMethodManifest,
+            wire::ProtocolErrorCode::Internal,
+        ] {
+            assert!(!terminal.is_retryable(), "{terminal:?} stays terminal");
+        }
+        let constructed =
+            wire::ProtocolError::new(wire::ProtocolErrorCode::Unavailable, "host restarting");
+        assert!(constructed.retryable);
+        let decoded = wire::decode_protocol_error(&serde_json::to_value(&constructed).unwrap())
+            .expect("roundtrip");
+        assert_eq!(decoded, constructed);
+        assert!(
+            wire::decode_protocol_error(&serde_json::json!({"code": "INTERNAL"})).is_err(),
+            "the retryability label is mandatory on the wire"
+        );
+    }
+
+    #[test]
+    fn decoders_reject_contract_violating_payloads() {
+        // pageSize below the contracted floor fails validation...
+        let bad_page = wire::decode_task_list_request(&serde_json::json!({"pageSize": 0}));
+        assert!(bad_page.is_err(), "pageSize 0 violates the contract");
+        // ...and so does a wrong-typed field.
+        let bad_type = wire::decode_task_list_response(
+            &serde_json::json!({"tasks": [{"id": 7, "title": "x", "status": "PENDING"}]}),
+        );
+        assert!(bad_type.is_err(), "wrong types must fail decoding");
     }
 }

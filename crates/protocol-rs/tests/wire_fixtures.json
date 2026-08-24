@@ -1,0 +1,24 @@
+{
+  "$comment": "Canonical sample payloads rendered from the TypeScript/Zod registry by scripts/generate-protocol-bindings.mjs and validated with the registry schemas before being written. The generated Rust decoders must accept these exact instances. Regenerate with: pnpm gen:protocol",
+  "errorEnvelope": {
+    "code": "UNAVAILABLE",
+    "message": "lazarus",
+    "retryable": true
+  },
+  "methods": {
+    "system.getInfo": {
+      "request": {},
+      "response": {
+        "hostVersion": "lazarus",
+        "capabilities": { "lazarus": true }
+      }
+    },
+    "system.health": { "request": {}, "response": { "status": "SERVING" } },
+    "system.subscribeEvents": {
+      "request": {},
+      "response": { "type": "outage", "outageId": "lazarus" }
+    },
+    "task.list": { "request": {}, "response": { "tasks": [] } },
+    "workspace.list": { "request": {}, "response": { "workspaces": [] } }
+  }
+}

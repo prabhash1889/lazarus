@@ -1,10 +1,13 @@
 use std::collections::BTreeMap;
 use std::net::IpAddr;
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Parser, Subcommand};
 use protocol_rs::auth::{self, LOCAL_TOKEN_ENV, bearer_header};
+use protocol_rs::deadline::{self, CLIENT_TIMEOUT_GRACE_MS, DEFAULT_RPC_BUDGET_MS, Deadline};
 use protocol_rs::generated_registry;
+use protocol_rs::generated_registry::wire;
 use protocol_rs::manifest::{
     self as manifest_contract, MethodManifest, NegotiatedManifest, Resolution,
     host_manifest_encoded, negotiate_with_host,
@@ -79,10 +82,16 @@ fn local_token() -> Result<String> {
 }
 
 /// The contract headers every Host request must carry: the `Authorization`
-/// Bearer token and this client's complete per-method manifest.
+/// Bearer token, this client's complete per-method manifest, and the
+/// caller's cancellation deadline (the shared default budget).
 fn contract_headers(token: &str) -> Result<Vec<(HeaderName, HeaderValue)>> {
     let authorization = HeaderValue::from_str(&bearer_header(token))
         .map_err(|_| anyhow!("local token contains characters invalid in an HTTP header"))?;
+    let deadline = HeaderValue::from_str(&Deadline::header_from_budget(
+        deadline::unix_now_ms(),
+        DEFAULT_RPC_BUDGET_MS,
+    ))
+    .map_err(|_| anyhow!("deadline header value is not a valid HTTP header"))?;
     Ok(vec![
         (
             HeaderName::from_static(auth::AUTH_METADATA_KEY),
@@ -92,7 +101,15 @@ fn contract_headers(token: &str) -> Result<Vec<(HeaderName, HeaderValue)>> {
             HeaderName::from_static(manifest_contract::MANIFEST_METADATA_KEY),
             HeaderValue::from_static(host_manifest_encoded()),
         ),
+        (HeaderName::from_static(deadline::DEADLINE_HEADER), deadline),
     ])
+}
+
+/// The local transport timeout matching the stamped deadline plus a small
+/// grace, so the Host's typed `DEADLINE_EXCEEDED` wins the race against a
+/// client-side abort and callers see the canonical error.
+fn client_timeout() -> Duration {
+    Duration::from_millis(DEFAULT_RPC_BUDGET_MS + CLIENT_TIMEOUT_GRACE_MS)
 }
 
 /// Verifies that a successful response advertises a decodable manifest
@@ -112,20 +129,22 @@ fn verify_response_manifest(raw: Option<&str>) -> Result<NegotiatedManifest> {
         .map_err(|err| anyhow!("host manifest is incompatible with this client: {err}"))
 }
 
-/// A typed JSON error body the Host attaches to gate rejections.
-#[derive(serde::Deserialize)]
-struct HostErrorBody {
-    code: String,
-    message: String,
-}
-
-/// Renders a failed HTTP response from the typed error body when one is
-/// present, falling back to a generic status description. Never echoes
-/// request secrets.
+/// Renders a failed HTTP response from the generated error envelope when
+/// one is present (naming retryability per the canonical classification),
+/// falling back to a generic status description. Never echoes request
+/// secrets.
 fn describe_host_error(status: u16, body: &str) -> String {
-    match serde_json::from_str::<HostErrorBody>(body) {
-        Ok(err) => format!("host rejected the request: {} [{}]", err.message, err.code),
-        Err(_) => format!("host returned an unexpected error (HTTP {status})"),
+    let decoded = serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| wire::decode_protocol_error(&value).ok());
+    match decoded {
+        Some(error) => format!(
+            "host rejected the request: {} [{}]{}",
+            error.message,
+            error.code.as_str(),
+            if error.retryable { " (retryable)" } else { "" }
+        ),
+        None => format!("host returned an unexpected error (HTTP {status})"),
     }
 }
 
@@ -187,7 +206,8 @@ fn format_method_resolution(name: &str, resolution: &Resolution) -> String {
 }
 
 /// Performs one authenticated contract request and verifies the response
-/// manifest before handing back the decoded JSON body.
+/// manifest before handing back the decoded JSON body. The request carries
+/// the caller deadline and a matching local transport timeout.
 async fn fetch_json(
     client: &reqwest::Client,
     addr: &str,
@@ -195,7 +215,7 @@ async fn fetch_json(
     token: &str,
 ) -> Result<(serde_json::Value, NegotiatedManifest)> {
     let url = format!("{}{}", addr.trim_end_matches('/'), path);
-    let mut request = client.get(&url);
+    let mut request = client.get(&url).timeout(client_timeout());
     for (name, value) in contract_headers(token)? {
         request = request.header(name, value);
     }
@@ -230,36 +250,24 @@ async fn run_status(addr: &str) -> Result<()> {
     let token = local_token()?;
     let client = reqwest::Client::new();
 
-    let (info, negotiated) = fetch_json(&client, addr, "/system/info", &token).await?;
-    let (health, _) = fetch_json(&client, addr, "/system/health", &token).await?;
+    let (info_raw, negotiated) = fetch_json(&client, addr, "/system/info", &token).await?;
+    let (health_raw, _) = fetch_json(&client, addr, "/system/health", &token).await?;
 
-    let host_version = info["hostVersion"]
-        .as_str()
-        .context("host info response is missing hostVersion")?
-        .to_owned();
-    let capabilities = parse_capabilities(&info);
-    let serving_status = health["status"]
-        .as_str()
-        .context("host health response is missing status")?
-        .to_owned();
+    // Both bodies are decoded through the generated bindings before use:
+    // an off-contract payload fails here instead of misreporting status.
+    let info = wire::decode_system_get_info_response(&info_raw)
+        .map_err(|error| anyhow!("host info response violates the contract: {error}"))?;
+    let health = wire::decode_system_health_response(&health_raw)
+        .map_err(|error| anyhow!("host health response violates the contract: {error}"))?;
+    let host_version = info.host_version;
+    let capabilities: BTreeMap<String, bool> = info.capabilities.into_iter().collect();
+    let serving_status = health.status.as_str().to_owned();
 
     println!(
         "{}",
         format_report(&host_version, &serving_status, &capabilities, &negotiated)
     );
     Ok(())
-}
-
-fn parse_capabilities(info: &serde_json::Value) -> BTreeMap<String, bool> {
-    info.get("capabilities")
-        .and_then(|value| value.as_object())
-        .map(|object| {
-            object
-                .iter()
-                .filter_map(|(name, enabled)| enabled.as_bool().map(|b| (name.clone(), b)))
-                .collect::<BTreeMap<_, _>>()
-        })
-        .unwrap_or_default()
 }
 
 fn main() -> Result<()> {
@@ -354,9 +362,9 @@ mod tests {
     }
 
     #[test]
-    fn requests_carry_bearer_and_complete_manifest_headers() {
+    fn requests_carry_bearer_manifest_and_deadline_headers() {
         let headers = contract_headers("unit-test-token").expect("valid headers");
-        assert_eq!(headers.len(), 2);
+        assert_eq!(headers.len(), 3);
 
         let authorization = headers
             .iter()
@@ -378,6 +386,27 @@ mod tests {
             .parse()
             .expect("decodable manifest");
         assert_eq!(sent, host_manifest(), "manifest must be complete");
+
+        // The deadline is a future epoch timestamp within the shared budget,
+        // and the local timeout matches it (plus the receive grace).
+        let deadline_header = headers
+            .iter()
+            .find(|(name, _)| name.as_str() == deadline::DEADLINE_HEADER)
+            .expect("deadline header");
+        let parsed = Deadline::parse(
+            deadline_header.1.to_str().expect("ascii"),
+            deadline::unix_now_ms(),
+        )
+        .expect("future deadline");
+        let remaining = parsed.remaining_ms(deadline::unix_now_ms());
+        assert!(
+            remaining <= DEFAULT_RPC_BUDGET_MS && remaining > DEFAULT_RPC_BUDGET_MS / 2,
+            "deadline stamps the shared budget: {remaining}"
+        );
+        assert_eq!(
+            client_timeout(),
+            Duration::from_millis(DEFAULT_RPC_BUDGET_MS + CLIENT_TIMEOUT_GRACE_MS)
+        );
     }
 
     #[test]
@@ -483,25 +512,63 @@ mod tests {
     }
 
     #[test]
-    fn typed_host_errors_render_code_and_message_without_secrets() {
-        let body = r#"{"code":"INCOMPATIBLE_METHOD_MANIFEST","message":"required method \"task.list\" missing from peer manifest"}"#;
+    fn typed_host_errors_render_code_retryability_and_message_without_secrets() {
+        // A canonical gate rejection: terminal, so no retry hint.
+        let body = r#"{"code":"INCOMPATIBLE_METHOD_MANIFEST","message":"required method \"task.list\" missing from peer manifest","retryable":false}"#;
         let described = describe_host_error(412, body);
         assert!(
             described.contains("[INCOMPATIBLE_METHOD_MANIFEST]"),
             "{described}"
         );
         assert!(described.contains("task.list"), "{described}");
+        assert!(!described.contains("retryable"), "{described}");
 
         let unauthenticated = describe_host_error(
             401,
-            r#"{"code":"UNAUTHENTICATED","message":"missing or invalid local token"}"#,
+            r#"{"code":"UNAUTHENTICATED","message":"missing or invalid local token","retryable":false}"#,
         );
         assert!(
             unauthenticated.contains("[UNAUTHENTICATED]"),
             "{unauthenticated}"
         );
 
+        // A retryable envelope (e.g. a busy Host) says so explicitly.
+        let unavailable = describe_host_error(
+            503,
+            r#"{"code":"UNAVAILABLE","message":"host is starting up","retryable":true}"#,
+        );
+        assert!(unavailable.contains("(retryable)"), "{unavailable}");
+        assert!(unavailable.contains("[UNAVAILABLE]"), "{unavailable}");
+
+        let deadline = describe_host_error(
+            504,
+            r#"{"code":"DEADLINE_EXCEEDED","message":"budget elapsed","retryable":true}"#,
+        );
+        assert!(deadline.contains("(retryable)"), "{deadline}");
+
+        // Bodies that violate the error contract fall back to the generic
+        // rendering instead of trusting off-contract payloads.
         let fallback = describe_host_error(500, "<html>not json</html>");
         assert!(fallback.contains("HTTP 500"), "{fallback}");
+        let off_contract = describe_host_error(500, r#"{"code":"INTERNAL","message":"x"}"#);
+        assert!(off_contract.contains("HTTP 500"), "{off_contract}");
+    }
+
+    #[test]
+    fn response_bodies_decode_through_the_generated_bindings() {
+        let info = serde_json::json!({
+            "hostVersion": "1.2.3",
+            "capabilities": {"events": true},
+        });
+        let decoded = wire::decode_system_get_info_response(&info).expect("on-contract");
+        assert_eq!(decoded.host_version, "1.2.3");
+
+        // Unknown additive fields are tolerated; wrong shapes are not.
+        let mut additive = info.clone();
+        additive["futureField"] = serde_json::json!(42);
+        assert!(wire::decode_system_get_info_response(&additive).is_ok());
+        assert!(
+            wire::decode_system_health_response(&serde_json::json!({"status": "WARPED"})).is_err()
+        );
     }
 }

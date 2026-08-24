@@ -28,6 +28,14 @@ export {
   PERSISTENCE_REGISTRY_NAMESPACE,
   PERSISTENCE_RECORDS,
   snapshotPersistenceRegistry,
+  ERROR_ENVELOPE,
+  ERROR_ENVELOPE_NAME,
+  ERROR_ENVELOPE_VERSION,
+  errorEnvelopeFingerprint,
+  isRetryableErrorCode,
+  protocolError,
+  RETRYABLE_ERROR_CODES,
+  ERROR_CODE_OPTIONS,
 } from './registry/index.ts';
 export type {
   MethodVersion,
@@ -41,4 +49,5 @@ export type {
   PersistenceRecordDefinition,
   PersistenceRecordSnapshot,
   PersistenceRegistrySnapshot,
+  ProtocolErrorCode,
 } from './registry/index.ts';

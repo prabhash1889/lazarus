@@ -28,7 +28,14 @@ export const ErrorCodeSchema = z.enum([
   'INTERNAL',
 ]);
 
+/**
+ * The typed wire error envelope, versioned and generated like every method
+ * payload (see `registry/errors.ts`). `retryable` is the explicit label the
+ * plan requires: it is computed from the canonical classification in
+ * `errors.ts`, never hand-set at call sites.
+ */
 export const ProtocolErrorSchema = z.object({
   code: ErrorCodeSchema,
   message: z.string(),
+  retryable: z.boolean(),
 });

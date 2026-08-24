@@ -180,14 +180,47 @@ describe('error envelope wire contract', () => {
   // method is missing from the peer manifest (Incompatibility::RequiredMissing).
   it('parses the actual Host INCOMPATIBLE_METHOD_MANIFEST rejection body', () => {
     const raw =
-      '{"code":"INCOMPATIBLE_METHOD_MANIFEST","message":"required method \\"task.list\\" missing from peer manifest"}';
+      '{"code":"INCOMPATIBLE_METHOD_MANIFEST","message":"required method \\"task.list\\" missing from peer manifest","retryable":false}';
     const parsed = ProtocolErrorSchema.parse(JSON.parse(raw));
     assert.equal(parsed.code, 'INCOMPATIBLE_METHOD_MANIFEST');
     assert.equal(parsed.message, 'required method "task.list" missing from peer manifest');
+    assert.equal(parsed.retryable, false);
     assert.ok(ErrorCodeSchema.safeParse('INCOMPATIBLE_METHOD_MANIFEST').success);
     assert.ok(!ErrorCodeSchema.safeParse('MANIFEST_MISMATCH').success);
   });
+
+  it('the generated wire fixtures are canonical instances of every method', () => {
+    const fixtures = JSON.parse(
+      readFileSync(
+        join(
+          dirname(fileURLToPath(import.meta.url)),
+          '../../../../crates/protocol-rs/tests/wire_fixtures.json',
+        ),
+        { encoding: 'utf8' },
+      ),
+    ) as {
+      errorEnvelope: unknown;
+      methods: Record<string, { request: unknown; response: unknown }>;
+    };
+
+    for (const method of METHODS) {
+      const fixture = fixtureOrNull(fixtures, method.name);
+      assert.ok(fixture !== null, `missing fixture for ${method.name}`);
+      // The Rust decoders accept exactly these; they must be instances the
+      // TypeScript registry itself accepts.
+      void method.request.parse(fixture.request);
+      void method.response.parse(fixture.response);
+    }
+    void ProtocolErrorSchema.parse(fixtures.errorEnvelope);
+  });
 });
+
+function fixtureOrNull(
+  fixtures: { methods: Record<string, { request: unknown; response: unknown }> },
+  name: string,
+): { request: unknown; response: unknown } | null {
+  return fixtures.methods[name] ?? null;
+}
 
 describe('additive-minor validation', () => {
   it('accepts an additive minor (new optional field)', () => {

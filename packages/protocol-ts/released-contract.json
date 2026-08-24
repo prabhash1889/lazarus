@@ -1,5 +1,5 @@
 {
-  "$comment": "Frozen released-contract baseline: the method contracts as of the last intentional release. Generation and CI validate the candidate registry against this file; it is never rewritten by normal generation. Move it explicitly with: pnpm --filter @lazarus/protocol-ts release:contract",
+  "$comment": "Frozen released-contract baseline: the method contracts and the shared error envelope as of the last intentional release. Generation and CI validate the candidate registry against this file; it is never rewritten by normal generation. Move it explicitly with: pnpm --filter @lazarus/protocol-ts release:contract",
   "manifestFingerprint": "9b2843218d5224684e6fcc9089dd2d3b9ae4b368fce844cfc612d05858a1772c",
   "methods": [
     {
@@ -259,5 +259,43 @@
         "type": "object"
       }
     }
-  ]
+  ],
+  "errorEnvelope": {
+    "name": "protocol.error",
+    "version": {
+      "major": 1,
+      "minor": 0
+    },
+    "requestSchema": {},
+    "responseSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "code": {
+          "enum": [
+            "CANCELLED",
+            "UNKNOWN",
+            "INVALID_ARGUMENT",
+            "DEADLINE_EXCEEDED",
+            "NOT_FOUND",
+            "ALREADY_EXISTS",
+            "PERMISSION_DENIED",
+            "UNAUTHENTICATED",
+            "FAILED_PRECONDITION",
+            "INCOMPATIBLE_METHOD_MANIFEST",
+            "UNAVAILABLE",
+            "INTERNAL"
+          ],
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "retryable": {
+          "type": "boolean"
+        }
+      },
+      "required": ["code", "message", "retryable"],
+      "type": "object"
+    }
+  }
 }

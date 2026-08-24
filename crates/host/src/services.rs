@@ -1,15 +1,23 @@
 //! Minimal Axum JSON/HTTP serving for the Phase 1.5 Host unary surface plus
 //! the authenticated SSE event subscription.
+//!
+//! Every response body is built from (and every caller-supplied payload is
+//! decoded against) the generated wire bindings in
+//! `protocol_rs::generated_registry::wire`, so neither side can drift from
+//! the TypeScript/Zod contract. Caller deadlines are enforced operationally:
+//! work stops at the budget and answers the canonical `DEADLINE_EXCEEDED`.
 
-use std::collections::HashMap;
 use std::convert::Infallible;
+use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
+use std::time::Duration;
 
 use axum::Json;
 use axum::Router;
-use axum::extract::{Extension, Request, State};
+use axum::extract::rejection::QueryRejection;
+use axum::extract::{Extension, Query, Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::Next;
 use axum::response::sse::{self, Sse};
@@ -18,11 +26,12 @@ use axum::routing::get;
 use futures_core::Stream;
 use protocol_rs::auth;
 use protocol_rs::bridges::{apply_bridge_steps, downgrade_response_steps};
+use protocol_rs::deadline::{self, Deadline, DeadlineError};
+use protocol_rs::generated_registry::wire;
 use protocol_rs::manifest::{
     self as manifest_contract, MethodManifest, NegotiatedManifest, Resolution,
     host_manifest_encoded, negotiate_with_host,
 };
-use serde::Serialize;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 
@@ -53,14 +62,18 @@ pub enum GateCode {
     Unauthenticated,
     InvalidArgument,
     IncompatibleMethodManifest,
+    DeadlineExceeded,
 }
 
 impl GateCode {
-    fn as_str(self) -> &'static str {
+    /// The canonical generated error code this gate rejection carries on the
+    /// wire; retryability is derived from it, never set by hand.
+    fn error_code(self) -> wire::ProtocolErrorCode {
         match self {
-            Self::Unauthenticated => "UNAUTHENTICATED",
-            Self::InvalidArgument => "INVALID_ARGUMENT",
-            Self::IncompatibleMethodManifest => "INCOMPATIBLE_METHOD_MANIFEST",
+            Self::Unauthenticated => wire::ProtocolErrorCode::Unauthenticated,
+            Self::InvalidArgument => wire::ProtocolErrorCode::InvalidArgument,
+            Self::IncompatibleMethodManifest => wire::ProtocolErrorCode::IncompatibleMethodManifest,
+            Self::DeadlineExceeded => wire::ProtocolErrorCode::DeadlineExceeded,
         }
     }
 
@@ -69,6 +82,7 @@ impl GateCode {
             Self::Unauthenticated => StatusCode::UNAUTHORIZED,
             Self::InvalidArgument => StatusCode::BAD_REQUEST,
             Self::IncompatibleMethodManifest => StatusCode::PRECONDITION_FAILED,
+            Self::DeadlineExceeded => StatusCode::GATEWAY_TIMEOUT,
         }
     }
 }
@@ -87,24 +101,16 @@ impl GateError {
             message: message.into(),
         }
     }
-}
 
-#[derive(Serialize)]
-struct ErrorBody {
-    code: &'static str,
-    message: String,
+    /// Builds the canonical error envelope for this rejection.
+    pub fn to_protocol_error(&self) -> wire::ProtocolError {
+        wire::ProtocolError::new(self.code.error_code(), self.message.clone())
+    }
 }
 
 impl IntoResponse for GateError {
     fn into_response(self) -> Response {
-        (
-            self.code.status(),
-            Json(ErrorBody {
-                code: self.code.as_str(),
-                message: self.message,
-            }),
-        )
-            .into_response()
+        (self.code.status(), Json(self.to_protocol_error())).into_response()
     }
 }
 
@@ -197,8 +203,8 @@ fn negotiate_manifest(headers: &HeaderMap) -> Result<NegotiatedManifest, GateErr
 /// Axum middleware enforcing the transport gate on every request: Bearer
 /// authentication first (unknown routes included, so route probing is never
 /// unauthenticated), then per-method manifest negotiation for known paths,
-/// with this Host's complete encoded manifest attached to every successful
-/// response.
+/// then the caller's cancellation/deadline budget, with this Host's complete
+/// encoded manifest attached to every successful response.
 pub async fn transport_gate(
     State(services): State<HostServices>,
     mut request: Request,
@@ -224,8 +230,26 @@ pub async fn transport_gate(
     {
         request.extensions_mut().insert(NegotiatedMinor(*minor));
     }
+    let remaining_ms = match caller_deadline_remaining(request.headers()) {
+        Ok(remaining) => remaining,
+        Err(gate_error) => return gate_error.into_response(),
+    };
 
-    let mut response = next.run(request).await;
+    // The handler future runs under the caller's remaining budget. Elapsing
+    // drops the future mid-flight - stopping whatever the endpoint was doing
+    // - and answers with the canonical DEADLINE_EXCEEDED rejection.
+    let response = run_within_deadline(remaining_ms, async { next.run(request).await }, || {
+        GateError::new(
+            GateCode::DeadlineExceeded,
+            "the request's deadline elapsed before it completed",
+        )
+    })
+    .await;
+
+    let mut response = match response {
+        Ok(response) => response,
+        Err(gate_error) => return gate_error.into_response(),
+    };
     if response.status().is_success()
         && let Ok(value) = HeaderValue::from_str(host_manifest_encoded())
     {
@@ -236,46 +260,86 @@ pub async fn transport_gate(
     response
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SystemInfoBody {
-    host_version: &'static str,
-    capabilities: HashMap<String, bool>,
+/// Reads and validates the caller's optional [`deadline::DEADLINE_HEADER`],
+/// returning the remaining budget in milliseconds. A malformed header is a
+/// typed `INVALID_ARGUMENT`; an already-elapsed one is an immediate typed
+/// `DEADLINE_EXCEEDED` so cancellation stays observable even when no work
+/// remains.
+pub fn caller_deadline_remaining(headers: &HeaderMap) -> Result<Option<u64>, GateError> {
+    let Some(raw) = headers
+        .get(deadline::DEADLINE_HEADER)
+        .and_then(|value| value.to_str().ok())
+    else {
+        return Ok(None);
+    };
+    let parsed = Deadline::parse(raw, deadline::unix_now_ms()).map_err(|error| match error {
+        DeadlineError::Malformed => GateError::new(
+            GateCode::InvalidArgument,
+            format!(
+                "{} must be Unix epoch milliseconds",
+                deadline::DEADLINE_HEADER
+            ),
+        ),
+        DeadlineError::Expired { .. } => GateError::new(
+            GateCode::DeadlineExceeded,
+            "the request arrived after its deadline had already elapsed",
+        ),
+    })?;
+    Ok(Some(parsed.remaining_ms(deadline::unix_now_ms())))
 }
 
-async fn system_info(State(services): State<HostServices>) -> Json<SystemInfoBody> {
-    Json(SystemInfoBody {
-        host_version: env!("CARGO_PKG_VERSION"),
+/// Runs `work` under an optional millisecond budget. Elapsing drops the
+/// work future - cancelling it - and yields the error produced by
+/// `on_elapsed`. Without a budget the work runs to completion.
+async fn run_within_deadline<T, F>(
+    remaining_ms: Option<u64>,
+    work: F,
+    on_elapsed: impl FnOnce() -> GateError,
+) -> Result<T, GateError>
+where
+    F: Future<Output = T>,
+{
+    let Some(remaining_ms) = remaining_ms else {
+        return Ok(work.await);
+    };
+    match tokio::time::timeout(Duration::from_millis(remaining_ms.max(1)), work).await {
+        Ok(output) => Ok(output),
+        Err(_elapsed) => Err(on_elapsed()),
+    }
+}
+
+async fn system_info(State(services): State<HostServices>) -> Json<wire::SystemGetInfoResponse> {
+    Json(wire::SystemGetInfoResponse {
+        host_version: env!("CARGO_PKG_VERSION").to_owned(),
         capabilities: services.state.host_capabilities().clone(),
     })
 }
 
-#[derive(Serialize)]
-struct HealthBody {
-    status: &'static str,
-}
-
-async fn health() -> Json<HealthBody> {
-    Json(HealthBody { status: "SERVING" })
-}
-
-#[derive(Serialize)]
-struct ListWorkspacesBody {
-    workspaces: Vec<serde_json::Value>,
-}
-
-async fn list_workspaces() -> Json<ListWorkspacesBody> {
-    Json(ListWorkspacesBody {
-        workspaces: Vec::new(),
+async fn health() -> Json<wire::SystemHealthResponse> {
+    Json(wire::SystemHealthResponse {
+        status: wire::SystemHealthResponseStatus::Serving,
     })
 }
 
-/// Unix epoch milliseconds, the v1.1+ `task.list` page timestamp.
-fn unix_now_ms() -> u128 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system clock is after the epoch")
-        .as_millis()
+/// Decodes a paginated request's query string into its generated request
+/// type and enforces the contract's constraints. Malformed values or
+/// bound violations are typed `INVALID_ARGUMENT`s, so clients can never
+/// believe an out-of-contract request was accepted.
+async fn list_workspaces(
+    query: Result<Query<wire::WorkspaceListRequest>, QueryRejection>,
+) -> Result<Json<wire::WorkspaceListResponse>, GateError> {
+    let Query(request) = query
+        .map_err(|_| GateError::new(GateCode::InvalidArgument, "query parameters are malformed"))?;
+    request.validate().map_err(|reason| {
+        GateError::new(
+            GateCode::InvalidArgument,
+            format!("request violates the method contract: {reason}"),
+        )
+    })?;
+    Ok(Json(wire::WorkspaceListResponse {
+        workspaces: Vec::new(),
+        pagination: None,
+    }))
 }
 
 /// `GET /tasks`: serves `task.list` at this Host's minor, always including
@@ -283,27 +347,46 @@ fn unix_now_ms() -> u128 {
 /// resolved an older bridged peer minor, the declared bridge steps adapt the
 /// response down before it is returned; current or newer peers receive the
 /// full shape.
-async fn list_tasks(negotiated: Option<Extension<NegotiatedMinor>>) -> Json<serde_json::Value> {
-    let mut body = serde_json::json!({
-        "tasks": [],
-        "servedAtUnixMs": unix_now_ms(),
-    });
+async fn list_tasks(
+    negotiated: Option<Extension<NegotiatedMinor>>,
+    query: Result<Query<wire::TaskListRequest>, QueryRejection>,
+) -> Result<Json<serde_json::Value>, GateError> {
+    let Query(page) = query
+        .map_err(|_| GateError::new(GateCode::InvalidArgument, "query parameters are malformed"))?;
+    page.validate().map_err(|reason| {
+        GateError::new(
+            GateCode::InvalidArgument,
+            format!("request violates the method contract: {reason}"),
+        )
+    })?;
+    // Typed construction keeps the served payload on-contract by
+    // construction; only the declared bridge may reshape it afterwards.
+    let mut body = serde_json::to_value(&wire::TaskListResponse {
+        tasks: Vec::new(),
+        pagination: None,
+        served_at_unix_ms: Some(deadline::unix_now_ms()),
+    })
+    .expect("generated response serializes");
     if let Some(Extension(NegotiatedMinor(minor))) = negotiated {
         apply_bridge_steps(&mut body, downgrade_response_steps("task.list", minor));
     }
-    Json(body)
+    Ok(Json(body))
 }
 
 /// The SSE subscription stream: the opening tombstone/snapshot prefix, then
-/// live frames until the client disconnects or falls behind. The feed is the
-/// bus's bounded broadcast channel, so a slow subscriber can never grow
-/// memory; lag closes the stream instead of skipping frames, and the client
-/// resubscribes for a fresh authoritative snapshot.
+/// live frames until the client disconnects, falls behind, or reaches its
+/// deadline. The feed is the bus's bounded broadcast channel, so a slow
+/// subscriber can never grow memory; lag closes the stream instead of
+/// skipping frames, and the client resubscribes for a fresh authoritative
+/// snapshot.
 struct Subscription {
     prefix: std::vec::IntoIter<EventFrame>,
     /// Direct bounded-broadcast feed with persistent waker state, so a slow
     /// subscriber can never grow memory.
     stream: BroadcastStream<EventFrame>,
+    /// Absolute caller deadline (epoch ms); the stream closes once passed,
+    /// exactly like any other cancellation of the subscription.
+    deadline_epoch_ms: Option<u64>,
 }
 
 impl Subscription {
@@ -311,6 +394,11 @@ impl Subscription {
     /// frame flows exactly once: the Phase 1 snapshot is empty and frames
     /// carry no state payload, so none can duplicate it.
     fn poll_next_frame(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<EventFrame>> {
+        if let Some(epoch_ms) = self.deadline_epoch_ms
+            && deadline::unix_now_ms() >= epoch_ms
+        {
+            return Poll::Ready(None);
+        }
         if let Some(frame) = self.prefix.next() {
             return Poll::Ready(Some(frame));
         }
@@ -341,15 +429,18 @@ fn encode_frame(frame: EventFrame) -> sse::Event {
 /// `GET /system/events`: authenticated SSE subscription. Sends the restart
 /// tombstone exactly once per outage (skipped when the client's
 /// [`LAST_OUTAGE_HEADER`] already names the current outage), then an
-/// authoritative snapshot, then live events.
+/// authoritative snapshot, then live events. A caller deadline closes the
+/// stream when it elapses; the client resubscribes.
 async fn system_events(
     State(services): State<HostServices>,
     headers: HeaderMap,
-) -> Sse<Subscription> {
+) -> Result<Sse<Subscription>, GateError> {
     let last_outage_id = headers
         .get(LAST_OUTAGE_HEADER)
         .and_then(|value| value.to_str().ok())
         .map(str::to_owned);
+    let deadline_epoch_ms = caller_deadline_remaining(&headers)?
+        .map(|remaining| deadline::unix_now_ms().saturating_add(remaining));
     let bus = &services.state.bus;
     // The Phase 1 snapshot is empty and live frames carry no state payload,
     // so every frame queued from this subscription onward must be delivered
@@ -360,10 +451,11 @@ async fn system_events(
         prefix.push(EventFrame::tombstone(bus.outage_id()));
     }
     prefix.push(EventFrame::authoritative_snapshot());
-    Sse::new(Subscription {
+    Ok(Sse::new(Subscription {
         prefix: prefix.into_iter(),
         stream: BroadcastStream::new(rx),
-    })
+        deadline_epoch_ms,
+    }))
 }
 
 /// Builds the complete loopback Host router with the transport gate layered
@@ -435,22 +527,154 @@ mod tests {
     /// it with 412 before `list_tasks` runs).
     #[tokio::test]
     async fn task_list_adapts_only_for_the_bridged_older_minor() {
-        let current = list_tasks(Some(Extension(NegotiatedMinor(2)))).await.0;
+        let empty_query = || {
+            Ok(Query(wire::TaskListRequest {
+                cursor: None,
+                page_size: None,
+            }))
+        };
+        let current = list_tasks(Some(Extension(NegotiatedMinor(2))), empty_query())
+            .await
+            .expect("in-contract request")
+            .0;
         assert!(current.get("servedAtUnixMs").is_some());
 
-        let bridged = list_tasks(Some(Extension(NegotiatedMinor(0)))).await.0;
+        let bridged = list_tasks(Some(Extension(NegotiatedMinor(0))), empty_query())
+            .await
+            .expect("in-contract request")
+            .0;
         assert!(
             bridged.get("servedAtUnixMs").is_none(),
             "the declared 1.0 bridge must strip the additive field"
         );
         assert_eq!(bridged["tasks"], serde_json::json!([]));
 
-        let undeclared = list_tasks(Some(Extension(NegotiatedMinor(1)))).await.0;
+        let undeclared = list_tasks(Some(Extension(NegotiatedMinor(1))), empty_query())
+            .await
+            .expect("in-contract request")
+            .0;
         assert!(undeclared.get("servedAtUnixMs").is_some());
 
         // No negotiation result at all keeps the full shape.
-        let plain = list_tasks(None).await.0;
+        let plain = list_tasks(None, empty_query())
+            .await
+            .expect("in-contract request")
+            .0;
         assert!(plain.get("servedAtUnixMs").is_some());
+    }
+
+    #[tokio::test]
+    async fn out_of_contract_page_requests_are_typed_invalid_arguments() {
+        // pageSize below the contracted floor decodes but violates
+        // validation, so the request is rejected before any work runs.
+        let query = Ok(Query(wire::TaskListRequest {
+            cursor: None,
+            page_size: Some(0),
+        }));
+        let rejected = list_tasks(None, query).await;
+        let error = rejected.unwrap_err();
+        assert_eq!(error.code, GateCode::InvalidArgument);
+        assert!(error.message.contains("pageSize"), "{error:?}");
+    }
+
+    /// Cancellation is operational: a deadline that elapses drops the work
+    /// future mid-flight instead of letting it finish in the background.
+    #[tokio::test]
+    async fn an_elapsed_deadline_stops_work() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let completed = Arc::new(AtomicBool::new(false));
+        let flag = completed.clone();
+
+        let work = async move {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            flag.store(true, Ordering::SeqCst);
+            "finished"
+        };
+
+        // 1 ms of budget against a 30 s job: elapsing cancels the job.
+        let outcome = run_within_deadline(Some(1), work, || {
+            GateError::new(GateCode::DeadlineExceeded, "elapsed")
+        })
+        .await;
+        assert_eq!(outcome.unwrap_err().code, GateCode::DeadlineExceeded);
+        assert!(
+            !completed.load(Ordering::SeqCst),
+            "the cancelled future must never have completed its work"
+        );
+
+        // With enough budget the same shape completes.
+        let outcome: Result<&'static str, GateError> =
+            run_within_deadline(Some(5_000), async { "finished" }, || unreachable!()).await;
+        assert_eq!(outcome.expect("completes within budget"), "finished");
+    }
+
+    #[test]
+    fn caller_deadlines_parse_validate_and_expose_remaining_budget() {
+        let now = deadline::unix_now_ms();
+
+        // No header means no budget: unlimited.
+        assert_eq!(caller_deadline_remaining(&HeaderMap::new()).unwrap(), None);
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            deadline::DEADLINE_HEADER,
+            HeaderValue::from_str(&Deadline::header_from_budget(now, 250)).expect("valid"),
+        );
+        let remaining = caller_deadline_remaining(&headers)
+            .expect("future deadline")
+            .expect("some budget");
+        assert!(
+            (200..=250).contains(&remaining),
+            "deadline stamps the shared budget: {remaining}"
+        );
+
+        // Malformed values are typed INVALID_ARGUMENT.
+        let mut headers = HeaderMap::new();
+        headers.insert(deadline::DEADLINE_HEADER, HeaderValue::from_static("soon"));
+        let error = caller_deadline_remaining(&headers).unwrap_err();
+        assert_eq!(error.code, GateCode::InvalidArgument);
+
+        // An elapsed deadline is an immediate typed DEADLINE_EXCEEDED.
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            deadline::DEADLINE_HEADER,
+            HeaderValue::from_str(&now.saturating_sub(1_000).to_string()).expect("valid"),
+        );
+        let error = caller_deadline_remaining(&headers).unwrap_err();
+        assert_eq!(error.code, GateCode::DeadlineExceeded);
+        assert!(
+            error.to_protocol_error().retryable,
+            "the canonical classification marks deadline overruns retryable"
+        );
+    }
+
+    #[test]
+    fn gate_rejections_carry_the_canonical_error_envelope() {
+        let unauthenticated = GateError::new(GateCode::Unauthenticated, "missing token");
+        let envelope = unauthenticated.to_protocol_error();
+        assert_eq!(envelope.code.as_str(), "UNAUTHENTICATED");
+        assert!(!envelope.retryable);
+
+        let deadline_error =
+            GateError::new(GateCode::DeadlineExceeded, "budget elapsed").to_protocol_error();
+        assert_eq!(deadline_error.code.as_str(), "DEADLINE_EXCEEDED");
+        assert!(
+            deadline_error.retryable,
+            "the canonical classification marks deadlines retryable"
+        );
+
+        // Serialization matches the wire contract byte for byte.
+        let rendered =
+            serde_json::to_value(unauthenticated.to_protocol_error()).expect("serializes");
+        assert_eq!(
+            rendered,
+            serde_json::json!({
+                "code": "UNAUTHENTICATED",
+                "message": "missing token",
+                "retryable": false,
+            })
+        );
     }
 
     #[test]
@@ -537,6 +761,7 @@ mod tests {
         Subscription {
             prefix: Vec::new().into_iter(),
             stream: BroadcastStream::new(rx),
+            deadline_epoch_ms: None,
         }
     }
 
@@ -596,6 +821,7 @@ mod tests {
             ]
             .into_iter(),
             stream: BroadcastStream::new(rx),
+            deadline_epoch_ms: None,
         };
         assert_eq!(
             next_frame(&mut sub).await,

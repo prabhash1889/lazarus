@@ -17,8 +17,20 @@ export {
   validateMethodTransition,
   validateManifestTransition,
   validateFrozenContractTransition,
+  validateFrozenErrorEnvelopeTransition,
 } from './validation.ts';
-export type { SchemaTransition, FrozenContractMethod } from './validation.ts';
+export type { SchemaTransition, FrozenContractMethod, FrozenErrorEnvelope } from './validation.ts';
+export {
+  ERROR_ENVELOPE,
+  ERROR_ENVELOPE_NAME,
+  ERROR_ENVELOPE_VERSION,
+  errorEnvelopeFingerprint,
+  isRetryableErrorCode,
+  protocolError,
+  RETRYABLE_ERROR_CODES,
+  ERROR_CODE_OPTIONS,
+} from './errors.ts';
+export type { ErrorEnvelopeDefinition, ProtocolErrorCode } from './errors.ts';
 export {
   BRIDGES,
   declareBridge,

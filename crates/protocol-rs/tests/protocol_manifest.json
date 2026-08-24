@@ -64,12 +64,13 @@
       "name": "task.list",
       "olderMinor": 0,
       "newerMinor": 2,
-      "steps": [
-        {
-          "op": "omitResponseFields",
-          "fields": ["servedAtUnixMs"]
-        }
-      ]
+      "steps": [{ "op": "omitResponseFields", "fields": ["servedAtUnixMs"] }]
     }
-  ]
+  ],
+  "errorEnvelope": {
+    "name": "protocol.error",
+    "major": 1,
+    "minor": 0,
+    "fingerprint": "415bfc21eb785cd03b3ccbb20466946a00ea79df04233b129ae708d91ba9619a"
+  }
 }

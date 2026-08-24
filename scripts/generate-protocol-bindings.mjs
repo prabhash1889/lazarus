@@ -3,15 +3,27 @@
 // registry (@lazarus/protocol-ts), which is the single source of truth.
 //
 // Outputs:
-//   crates/protocol-rs/src/generated_registry.rs   method manifest + fingerprints
+//   crates/protocol-rs/src/generated_registry.rs   method manifest +
+//                                                  fingerprints + generated
+//                                                  wire types (the `wire`
+//                                                  module: request/response
+//                                                  payloads with decode
+//                                                  validation, and the
+//                                                  versioned error envelope)
 //   crates/protocol-rs/tests/protocol_manifest.json golden snapshot for the
 //                                                  cross-language equality test
+//   crates/protocol-rs/tests/wire_fixtures.json    canonical sample payloads
+//                                                  rendered and Zod-validated
+//                                                  by the TypeScript registry;
+//                                                  the Rust decoders must
+//                                                  accept exactly these
 //
 // Release gate: before anything is written, the candidate registry is
 // validated against the frozen released-contract baseline
 // (packages/protocol-ts/released-contract.json). Same-version edits and
-// breaking-minor edits fail generation. The baseline is NEVER rewritten by
-// normal generation; an intentional contract release moves it explicitly via:
+// breaking-minor edits fail generation - for method payloads and for the
+// shared error envelope alike. The baseline is NEVER rewritten by normal
+// generation; an intentional contract release moves it explicitly via:
 //   pnpm --filter @lazarus/protocol-ts release:contract
 //
 // Run via: pnpm --filter @lazarus/protocol-ts gen:bindings
@@ -21,6 +33,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
 import { format } from 'prettier';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -32,8 +45,14 @@ const {
   jsonSchemaOf,
   canonicalJson,
   validateFrozenContractTransition,
+  validateFrozenErrorEnvelopeTransition,
   requiredBridgeCoverageViolations,
   BRIDGES,
+  ERROR_ENVELOPE,
+  errorEnvelopeFingerprint,
+  RETRYABLE_ERROR_CODES,
+  protocolError,
+  ERROR_CODE_OPTIONS,
 } = await import(new URL('../packages/protocol-ts/src/registry/index.ts', import.meta.url));
 
 const manifest = snapshotManifest(METHODS);
@@ -56,6 +75,15 @@ function candidateContractMethods() {
     requestSchema: JSON.parse(canonicalJson(jsonSchemaOf(method.request))),
     responseSchema: JSON.parse(canonicalJson(jsonSchemaOf(method.response))),
   }));
+}
+
+function candidateErrorEnvelope() {
+  return {
+    name: ERROR_ENVELOPE.name,
+    version: { ...ERROR_ENVELOPE.version },
+    requestSchema: {},
+    responseSchema: JSON.parse(canonicalJson(jsonSchemaOf(ERROR_ENVELOPE.schema))),
+  };
 }
 
 function rustMethodKind(kind) {
@@ -84,7 +112,667 @@ const bridgeBindingsSorted = [...BRIDGES.values()]
     steps: bridge.steps,
   }))
   .sort((a, b) => (a.name === b.name ? a.olderMinor - b.olderMinor : a.name < b.name ? -1 : 1));
-// Kept multi-line once populated; skipped by rustfmt so codegen owns the shape.
+
+for (const method of methodsSorted) {
+  if (!RELEASED_FLOOR.has(method.name)) {
+    throw new Error(
+      `${method.name} is registered but missing from the released floor; extend RELEASED_FLOOR before regenerating`,
+    );
+  }
+}
+for (const name of floorSorted) {
+  if (!methodsSorted.some((m) => m.name === name)) {
+    throw new Error(`released-floor method ${name} is not in the registry`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Generated Rust wire types.
+//
+// Every method payload and the shared error envelope become real Rust types
+// with serde derives plus a generated `validate()` that enforces exactly the
+// constraints the JSON Schema carries (bounds, lengths). Serde's decoder
+// enforces required fields and rejects wrong types while ignoring unknown
+// additive fields, mirroring the TypeScript clients. Anything the walker
+// does not understand fails generation loudly instead of emitting a lossy
+// type: extend the generator together with the TypeScript registry.
+// ---------------------------------------------------------------------------
+
+// Annotation keywords never constrain acceptance and are ignored here.
+const WIRE_ANNOTATION_KEYWORDS = new Set([
+  '$schema',
+  '$id',
+  'title',
+  'description',
+  'default',
+  'examples',
+  'deprecated',
+]);
+// The structural keywords this generator understands.
+const WIRE_HANDLED_KEYWORDS = new Set([
+  'type',
+  'enum',
+  'const',
+  'minimum',
+  'maximum',
+  'minLength',
+  'maxLength',
+  'items',
+  'properties',
+  'required',
+  'oneOf',
+  'propertyNames',
+  'additionalProperties',
+]);
+
+function assertSupported(schema, where) {
+  if (typeof schema !== 'object' || schema === null) {
+    throw new Error(`wire generator cannot render ${where}: not a schema object`);
+  }
+  for (const key of Object.keys(schema)) {
+    if (!WIRE_ANNOTATION_KEYWORDS.has(key) && !WIRE_HANDLED_KEYWORDS.has(key)) {
+      throw new Error(
+        `wire generator cannot render ${where}: unsupported schema keyword "${key}"; extend the generator alongside the TypeScript registry`,
+      );
+    }
+  }
+}
+
+/** `pageSize` -> `page_size`, `servedAtUnixMs` -> `served_at_unix_ms`. */
+function rustFieldIdent(camel) {
+  return camel.replace(/([A-Z])/g, '_$1').toLowerCase();
+}
+
+/** `system.subscribeEvents` -> `SystemSubscribeEvents`; `NOT_SERVING` -> `NotServing`. */
+function rustPascal(name) {
+  return name
+    .split(/[^A-Za-z0-9_]+/)
+    .filter(Boolean)
+    .map((word) => {
+      // Title-case per segment for snake words and ALL-CAPS values;
+      // camelCase words keep their internal capitals after the lead.
+      const titleCase = (part) => part[0].toUpperCase() + part.slice(1).toLowerCase();
+      if (word.includes('_')) {
+        return word.split('_').filter(Boolean).map(titleCase).join('');
+      }
+      if (!/[a-z]/.test(word)) return titleCase(word);
+      return word[0].toUpperCase() + word.slice(1);
+    })
+    .join('');
+}
+
+function rustDecodeFn(methodName, role) {
+  const snake = methodName
+    .replaceAll('.', '_')
+    .replace(/([A-Z])/g, '_$1')
+    .toLowerCase();
+  return `decode_${snake}_${role}`;
+}
+
+function unionBranchesWithTags(schema, where) {
+  if (!Array.isArray(schema.oneOf)) return null;
+  return schema.oneOf.map((branch, index) => {
+    const tag = branch.properties?.type?.const;
+    if (typeof tag !== 'string') {
+      throw new Error(
+        `wire generator cannot render ${where}: union branch ${index} lacks a const type tag`,
+      );
+    }
+    return { tag, schema: branch };
+  });
+}
+
+function isRecordNode(node) {
+  return (
+    node.type === 'object' &&
+    node.additionalProperties !== undefined &&
+    node.additionalProperties !== false &&
+    Object.keys(node.properties ?? {}).length === 0
+  );
+}
+
+/**
+ * Constraint-check blocks for one property.
+ *
+ * `mode` selects how the value reaches the checks: `"self"` reads
+ * `self.<field>` (struct impls), `"binding"` reads a match-arm binding named
+ * `<field>` (union variant arms). Strings arrive as `&String`, integers as
+ * `&u64`; optionals are unwrapped first. Callers indent every emitted line.
+ */
+function constraintLines(label, field, node, optional, mode) {
+  const blocks = [];
+  const recv = mode === 'self' ? `self.${field}` : field;
+  // The borrow prelude is emitted lazily with the first check that needs it,
+  // so unconstrained fields never produce an unused variable.
+  let preludeEmitted = false;
+  const ensurePrelude = () => {
+    if (mode === 'self' && !optional && !preludeEmitted) {
+      blocks.push(`let v = &${recv};`);
+      preludeEmitted = true;
+    }
+  };
+  const pushCheck = (condition, message) => {
+    ensurePrelude();
+    blocks.push(
+      [
+        `if ${condition} {`,
+        `    return Err(${JSON.stringify(`${label}: ${message}`)}.to_string());`,
+        `}`,
+      ].join('\n'),
+    );
+  };
+  // clippy::len_zero prefers is_empty over a length comparison against one.
+  const lenCompare = (target, op, bound) =>
+    op === '<' && bound === 1 ? `${target}.is_empty()` : `${target}.len() ${op} ${bound}`;
+  const wrapOptional = (inner) => {
+    const recvExpr = mode === 'self' ? `self.${field}.as_ref()` : `${field}.as_ref()`;
+    return `${recvExpr}.is_some_and(|v| ${inner})`;
+  };
+  if (node.type === 'string') {
+    const direct = mode === 'self' && !optional ? 'v' : field;
+    if (node.minLength !== undefined) {
+      pushCheck(
+        optional
+          ? wrapOptional(lenCompare('v', '<', node.minLength))
+          : lenCompare(direct, '<', node.minLength),
+        `must be at least ${node.minLength} characters`,
+      );
+    }
+    if (node.maxLength !== undefined) {
+      pushCheck(
+        optional
+          ? wrapOptional(lenCompare('v', '>', node.maxLength))
+          : lenCompare(direct, '>', node.maxLength),
+        `must be at most ${node.maxLength} characters`,
+      );
+    }
+  }
+  if (node.type === 'integer') {
+    // u64 already implies minimum >= 0; only non-trivial bounds render.
+    if (typeof node.minimum === 'number' && node.minimum > 0) {
+      pushCheck(
+        optional
+          ? `${recv}.as_ref().is_some_and(|v| *v < ${node.minimum})`
+          : mode === 'self'
+            ? `*v < ${node.minimum}`
+            : `*${field} < ${node.minimum}`,
+        `must be at least ${node.minimum}`,
+      );
+    }
+    if (typeof node.maximum === 'number') {
+      pushCheck(
+        optional
+          ? `${recv}.as_ref().is_some_and(|v| *v > ${node.maximum})`
+          : mode === 'self'
+            ? `*v > ${node.maximum}`
+            : `*${field} > ${node.maximum}`,
+        `must be at most ${node.maximum}`,
+      );
+    }
+  }
+  return blocks;
+}
+
+/** Collects the Rust definitions for one payload schema. */
+function collectPayloadTypes(rootIdent, schema) {
+  const defs = [];
+  let usesHashMap = false;
+
+  function convert(ident, node, where) {
+    assertSupported(node, where);
+    const branches = unionBranchesWithTags(node, where);
+    if (branches !== null) {
+      emitTaggedUnion(ident, branches, where);
+      return ident;
+    }
+    if (node.enum !== undefined) {
+      emitStringEnum(ident, node, where);
+      return ident;
+    }
+    switch (node.type) {
+      case 'string':
+        return 'String';
+      case 'integer':
+        return 'u64';
+      case 'boolean':
+        return 'bool';
+      case 'array': {
+        assertSupported(node.items, `${where}[]`);
+        const itemType = convert(`${ident}Item`, node.items, `${where}[]`);
+        return `Vec<${itemType}>`;
+      }
+      case 'object': {
+        if (isRecordNode(node)) {
+          const valueNode = node.additionalProperties;
+          assertSupported(valueNode, `${where}<*>`);
+          if (valueNode.type === 'boolean' && unionBranchesWithTags(valueNode, where) === null) {
+            usesHashMap = true;
+            return 'HashMap<String, bool>';
+          }
+          throw new Error(
+            `wire generator cannot render ${where}: only record<string, boolean> maps are supported`,
+          );
+        }
+        emitStruct(ident, node, where);
+        return ident;
+      }
+      default:
+        throw new Error(`wire generator cannot render ${where}: unsupported type ${node.type}`);
+    }
+  }
+
+  function emitStruct(ident, node, where) {
+    const required = new Set(node.required ?? []);
+    const properties = node.properties ?? {};
+    const fieldLines = [];
+    let checks = '';
+    for (const [fieldName, propertyNode] of Object.entries(properties)) {
+      assertSupported(propertyNode, `${where}.${fieldName}`);
+      if (
+        unionBranchesWithTags(propertyNode, where) === null &&
+        propertyNode.enum === undefined &&
+        propertyNode.const !== undefined
+      ) {
+        throw new Error(
+          `wire generator cannot render ${where}.${fieldName}: const outside a union tag`,
+        );
+      }
+      const optional = !required.has(fieldName);
+      const rustField = rustFieldIdent(fieldName);
+      const rustType = convert(
+        `${ident}${rustPascal(fieldName)}`,
+        propertyNode,
+        `${where}.${fieldName}`,
+      );
+      const attrs = [];
+      if (rustField !== fieldName) attrs.push(`rename = ${JSON.stringify(fieldName)}`);
+      if (optional) attrs.push(`skip_serializing_if = "Option::is_none"`);
+      const renderedType = optional ? `Option<${rustType}>` : rustType;
+      fieldLines.push(
+        ...(attrs.length > 0 ? [`#[serde(${attrs.join(', ')})]`] : []),
+        `pub ${rustField}: ${renderedType},`,
+      );
+      for (const block of constraintLines(fieldName, rustField, propertyNode, optional, 'self')) {
+        checks += `${indentBlock(block, 8)}\n`;
+      }
+    }
+    const structDecl =
+      fieldLines.length === 0
+        ? `#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]\npub struct ${ident} {}`
+        : [
+            `#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]`,
+            `pub struct ${ident} {`,
+            ...fieldLines.map((line) => `    ${line}`),
+            `}`,
+          ].join('\n');
+    defs.push({
+      ident,
+      code: [
+        structDecl,
+        ``,
+        `impl ${ident} {`,
+        `    /// Enforces exactly the constraints carried by the contract schema.`,
+        `    pub fn validate(&self) -> Result<(), String> {`,
+        ...(checks.length > 0
+          ? checks.trimEnd().split('\n')
+          : [`        // No constraints beyond serde's decoding.`]),
+        `        Ok(())`,
+        `    }`,
+        `}`,
+      ].join('\n'),
+    });
+  }
+
+  function emitStringEnum(ident, node, where) {
+    if (node.type !== 'string') {
+      throw new Error(`wire generator cannot render ${where}: unsupported enum of ${node.type}`);
+    }
+    const variantLines = [];
+    const armLines = [];
+    for (const value of node.enum) {
+      const variant = rustPascal(String(value));
+      variantLines.push(`#[serde(rename = ${JSON.stringify(value)})]`, `${variant},`);
+      armLines.push(`Self::${variant} => ${JSON.stringify(value)},`);
+    }
+    defs.push({
+      ident,
+      code: [
+        `#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]`,
+        `pub enum ${ident} {`,
+        ...variantLines.map((line) => `    ${line}`),
+        `}`,
+        ``,
+        `impl ${ident} {`,
+        `    pub fn as_str(self) -> &'static str {`,
+        `        match self {`,
+        ...armLines.map((line) => `            ${line}`),
+        `        }`,
+        `    }`,
+        `}`,
+      ].join('\n'),
+    });
+  }
+
+  function emitTaggedUnion(ident, branches, where) {
+    const variantsRust = [];
+    const armRust = [];
+    for (const branch of branches) {
+      const variant = rustPascal(branch.tag);
+      const node = { ...branch.schema };
+      const properties = { ...(node.properties ?? {}) };
+      const required = new Set(node.required ?? []);
+      delete properties.type;
+      required.delete('type');
+      const fieldLines = [];
+      let checks = '';
+      const bindingNames = [];
+      for (const [fieldName, propertyNode] of Object.entries(properties)) {
+        assertSupported(propertyNode, `${where}.${branch.tag}.${fieldName}`);
+        const optional = !required.has(fieldName);
+        const rustField = rustFieldIdent(fieldName);
+        bindingNames.push(rustField);
+        const rustType = convert(
+          `${ident}${variant}${rustPascal(fieldName)}`,
+          propertyNode,
+          `${where}.${branch.tag}.${fieldName}`,
+        );
+        const renderedType = optional ? `Option<${rustType}>` : rustType;
+        fieldLines.push(
+          ...(optional ? [`#[serde(skip_serializing_if = "Option::is_none")]`] : []),
+          `${rustField}: ${renderedType},`,
+        );
+        for (const block of constraintLines(
+          fieldName,
+          rustField,
+          propertyNode,
+          optional,
+          'binding',
+        )) {
+          checks += `${indentBlock(block, 16)}\n`;
+        }
+      }
+      variantsRust.push(
+        indentBlock(
+          [`${variant} {`, ...fieldLines.map((line) => `    ${line}`), `},`].join('\n'),
+          4,
+        ),
+      );
+      armRust.push(
+        checks.length > 0
+          ? [
+              `            Self::${variant} { ${bindingNames.join(', ')} } => {`,
+              checks.trimEnd(),
+              `                Ok(())`,
+              `            }`,
+            ].join('\n')
+          : `            Self::${variant} { .. } => Ok(()),`,
+      );
+    }
+    defs.push({
+      ident,
+      code: [
+        `#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]`,
+        `#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]`,
+        `pub enum ${ident} {`,
+        ...variantsRust,
+        `}`,
+        ``,
+        `impl ${ident} {`,
+        `    /// Enforces exactly the constraints carried by the contract schema.`,
+        `    pub fn validate(&self) -> Result<(), String> {`,
+        `        match self {`,
+        ...armRust,
+        `        }`,
+        `    }`,
+        `}`,
+      ].join('\n'),
+    });
+  }
+
+  const rootType = convert(rootIdent, schema, rootIdent);
+  return { rootType, defs, usesHashMap };
+}
+
+function indentBlock(block, spaces) {
+  const pad = ' '.repeat(spaces);
+  return block
+    .split('\n')
+    .map((line) => pad + line)
+    .join('\n');
+}
+
+function indent(text, spaces) {
+  return text
+    .split('\n')
+    .map((line) => (line.length > 0 ? ' '.repeat(spaces) + line : line))
+    .join('\n');
+}
+
+/** Emits the whole `wire` module: payload types, decoders, error envelope. */
+function rustWireModule() {
+  const defs = [];
+  const decoders = [];
+  let usesHashMap = false;
+
+  for (const method of methodsSorted) {
+    const definition = METHODS.find((entry) => entry.name === method.name);
+    const pascal = rustPascal(method.name);
+    for (const role of ['request', 'response']) {
+      const zod = role === 'request' ? definition.request : definition.response;
+      const schema = JSON.parse(canonicalJson(jsonSchemaOf(zod)));
+      const collected = collectPayloadTypes(
+        `${pascal}${role === 'request' ? 'Request' : 'Response'}`,
+        schema,
+      );
+      if (collected.usesHashMap) usesHashMap = true;
+      defs.push(...collected.defs);
+      const label = `${method.name} ${role}`;
+      decoders.push(
+        [
+          `/// Decodes and validates a \`${method.name}\` ${role} payload produced by any peer.`,
+          `pub fn ${rustDecodeFn(method.name, role)}(`,
+          `    value: &serde_json::Value,`,
+          `) -> Result<${collected.rootType}, WireDecodeError> {`,
+          `    let decoded: ${collected.rootType} = serde_json::from_value(value.clone())`,
+          `        .map_err(|error| WireDecodeError::new(${JSON.stringify(label)}, error.to_string()))?;`,
+          `    decoded`,
+          `        .validate()`,
+          `        .map_err(|reason| WireDecodeError::new(${JSON.stringify(label)}, reason))?;`,
+          `    Ok(decoded)`,
+          `}`,
+        ].join('\n'),
+      );
+    }
+  }
+
+  // Identical definitions render once (shared shapes stay stable).
+  const seenIdents = new Set();
+  const uniqueDefs = defs.filter((def) => {
+    if (seenIdents.has(def.ident)) return false;
+    seenIdents.add(def.ident);
+    return true;
+  });
+
+  const retryableVariants = [...RETRYABLE_ERROR_CODES]
+    .map((code) => `Self::${rustPascal(code)}`)
+    .join(' | ');
+
+  const errorCodeVariants = ERROR_CODE_OPTIONS.map(
+    (code) => `#[serde(rename = ${JSON.stringify(code)})]\n${rustPascal(code)},`,
+  ).join('\n');
+  const errorCodeArms = ERROR_CODE_OPTIONS.map(
+    (code) => `Self::${rustPascal(code)} => ${JSON.stringify(code)},`,
+  ).join('\n');
+
+  return `/// Generated wire bindings for every protocol method payload and the
+/// shared error envelope, derived from the same TypeScript/Zod schemas as
+/// the manifest above. Decoders enforce required fields and reject wrong
+/// types (via serde) plus every schema constraint (via \`validate()\`),
+/// while unknown additive fields pass through untouched - exactly like the
+/// TypeScript clients. Canonical sample payloads live at
+/// crates/protocol-rs/tests/wire_fixtures.json. Do not edit by hand.
+pub mod wire {${
+    usesHashMap
+      ? `
+    use std::collections::HashMap;
+`
+      : ''
+  }
+    /// Why a wire payload failed to decode or violated its contract.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct WireDecodeError {
+        /// Which payload failed, e.g. \`"task.list response"\`.
+        pub payload: &'static str,
+        pub reason: String,
+    }
+
+    impl WireDecodeError {
+        pub(crate) fn new(payload: &'static str, reason: impl Into<String>) -> Self {
+            Self {
+                payload,
+                reason: reason.into(),
+            }
+        }
+    }
+
+    impl std::fmt::Display for WireDecodeError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{} payload is invalid: {}", self.payload, self.reason)
+        }
+    }
+
+    impl std::error::Error for WireDecodeError {}
+
+    /// Major version of the versioned error-envelope contract
+    /// (\`protocol.error\`), frozen in the released-contract baseline like
+    /// every method payload.
+    pub const ERROR_ENVELOPE_MAJOR: u32 = ${ERROR_ENVELOPE_VERSION_MAJOR};
+    /// Minor version of the versioned error-envelope contract.
+    pub const ERROR_ENVELOPE_MINOR: u32 = ${ERROR_ENVELOPE_VERSION_MINOR};
+    /// SHA-256 (hex) of the canonical JSON Schema of the error envelope.
+    pub const ERROR_ENVELOPE_FINGERPRINT: &str = "${errorEnvelopeFingerprint()}";
+
+    /// The typed wire error envelope (\`protocol.error\`).
+    #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    pub struct ProtocolError {
+        pub code: ProtocolErrorCode,
+        pub message: String,
+        pub retryable: bool,
+    }
+
+    /// Every canonical error code, generated from the TypeScript schema.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+    pub enum ProtocolErrorCode {
+${indent(errorCodeVariants, 8)}
+    }
+
+    impl ProtocolErrorCode {
+        pub fn as_str(self) -> &'static str {
+            match self {
+${indent(errorCodeArms, 16)}
+            }
+        }
+
+        /// True when the canonical classification marks the code retryable:
+        /// re-issuing the call (idempotency-keyed where it writes) may
+        /// succeed. Every other code is terminal.
+        pub fn is_retryable(self) -> bool {
+            matches!(self, ${retryableVariants})
+        }
+    }
+
+    impl ProtocolError {
+        /// Builds a conforming envelope: \`retryable\` always comes from the
+        /// canonical classification so call sites cannot mislabel an error.
+        pub fn new(code: ProtocolErrorCode, message: impl Into<String>) -> Self {
+            Self {
+                retryable: code.is_retryable(),
+                code,
+                message: message.into(),
+            }
+        }
+    }
+
+    /// Decodes and validates an error envelope received from a peer.
+    pub fn decode_protocol_error(
+        value: &serde_json::Value,
+    ) -> Result<ProtocolError, WireDecodeError> {
+        let decoded: ProtocolError = serde_json::from_value(value.clone())
+            .map_err(|error| WireDecodeError::new("protocol.error", error.to_string()))?;
+        Ok(decoded)
+    }
+
+${uniqueDefs.map((def) => indent(def.code, 4)).join('\n\n')}
+${decoders.map((decoder) => indent(decoder, 4)).join('\n\n')}
+}
+`;
+}
+
+const ERROR_ENVELOPE_VERSION_MAJOR = candidateErrorEnvelope().version.major;
+const ERROR_ENVELOPE_VERSION_MINOR = candidateErrorEnvelope().version.minor;
+
+// Canonical sample payloads: rendered from the released schemas here and
+// Zod-verified before they are written, so the Rust decoders are proven
+// against instances the TypeScript registry itself accepts.
+function sampleFromSchema(schema, where) {
+  assertSupported(schema, where);
+  const branches = unionBranchesWithTags(schema, where);
+  if (branches !== null) return sampleFromSchema(branches[0].schema, `${where}[0]`);
+  if (schema.const !== undefined) return schema.const;
+  if (schema.enum !== undefined) return schema.enum[0];
+  switch (schema.type) {
+    case 'string':
+      return 'lazarus';
+    case 'boolean':
+      return true;
+    case 'integer': {
+      let value = typeof schema.minimum === 'number' ? schema.minimum : 0;
+      if (typeof schema.maximum === 'number') value = Math.min(value, schema.maximum);
+      return value;
+    }
+    case 'array':
+      return [];
+    case 'object': {
+      if (isRecordNode(schema)) {
+        return { lazarus: sampleFromSchema(schema.additionalProperties, `${where}<*>`) };
+      }
+      const sample = {};
+      for (const key of schema.required ?? []) {
+        sample[key] = sampleFromSchema(schema.properties[key], `${where}.${key}`);
+      }
+      return sample;
+    }
+    default:
+      throw new Error(`fixture sampler cannot render ${where}: type ${schema.type}`);
+  }
+}
+
+async function buildWireFixtures() {
+  const methods = {};
+  for (const method of [...METHODS].sort((a, b) => (a.name < b.name ? -1 : 1))) {
+    const requestSample = sampleFromSchema(jsonSchemaOf(method.request), `${method.name} request`);
+    const responseSample = sampleFromSchema(
+      jsonSchemaOf(method.response),
+      `${method.name} response`,
+    );
+    // The TypeScript registry must accept exactly what we ship as canonical.
+    void method.request.parse(requestSample);
+    void method.response.parse(responseSample);
+    methods[method.name] = { request: requestSample, response: responseSample };
+  }
+  const envelopeSample = protocolError('UNAVAILABLE', 'lazarus');
+  void ERROR_ENVELOPE.schema.parse(envelopeSample);
+  return {
+    $comment:
+      'Canonical sample payloads rendered from the TypeScript/Zod registry by ' +
+      'scripts/generate-protocol-bindings.mjs and validated with the registry ' +
+      'schemas before being written. The generated Rust decoders must accept ' +
+      'these exact instances. Regenerate with: pnpm gen:protocol',
+    errorEnvelope: envelopeSample,
+    methods,
+  };
+}
+
 const bridgesTableRust =
   bridgesMinorsSorted.length === 0
     ? '[]'
@@ -119,20 +807,9 @@ function rustBridgeStep(step) {
   );
 }
 
-for (const method of methodsSorted) {
-  if (!RELEASED_FLOOR.has(method.name)) {
-    throw new Error(
-      `${method.name} is registered but missing from the released floor; extend RELEASED_FLOOR before regenerating`,
-    );
-  }
-}
-for (const name of floorSorted) {
-  if (!methodsSorted.some((m) => m.name === name)) {
-    throw new Error(`released-floor method ${name} is not in the registry`);
-  }
-}
+const wireModuleRust = rustWireModule();
 
-const rustOut = `// @generated by scripts/generate-protocol-bindings.mjs from
+const rustOutRaw = `// @generated by scripts/generate-protocol-bindings.mjs from
 // packages/protocol-ts/src/registry (the TypeScript/Zod source of truth).
 // DO NOT EDIT BY HAND. Regenerate with:
 //   pnpm --filter @lazarus/protocol-ts gen:bindings
@@ -140,7 +817,9 @@ const rustOut = `// @generated by scripts/generate-protocol-bindings.mjs from
 // The manifest fingerprint equals the SHA-256 of the canonical JSON of the
 // sorted method snapshots computed by the TypeScript registry
 // (\`snapshotManifest()\`); the golden copy used for verification lives at
-// crates/protocol-rs/tests/protocol_manifest.json.
+// crates/protocol-rs/tests/protocol_manifest.json. Canonical sample payloads
+// for the generated wire decoders live at
+// crates/protocol-rs/tests/wire_fixtures.json.
 
 /// Transport shape of a protocol method.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -252,6 +931,7 @@ pub fn binding_by_name(name: &str) -> Option<&'static MethodBinding> {
     METHOD_BINDINGS.iter().find(|binding| binding.name == name)
 }
 
+${wireModuleRust}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -298,6 +978,7 @@ mod tests {
                 assert!(binding.optional, "only optional methods declare fallbacks");
             }
         }
+        assert_eq!(wire::ERROR_ENVELOPE_FINGERPRINT.len(), 64);
     }
 
     #[test]
@@ -373,45 +1054,119 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn error_envelope_labels_retryability_from_the_canonical_classification() {
+        assert!(wire::ProtocolErrorCode::Unavailable.is_retryable());
+        assert!(wire::ProtocolErrorCode::DeadlineExceeded.is_retryable());
+        for terminal in [
+            wire::ProtocolErrorCode::Cancelled,
+            wire::ProtocolErrorCode::Unknown,
+            wire::ProtocolErrorCode::InvalidArgument,
+            wire::ProtocolErrorCode::NotFound,
+            wire::ProtocolErrorCode::AlreadyExists,
+            wire::ProtocolErrorCode::PermissionDenied,
+            wire::ProtocolErrorCode::Unauthenticated,
+            wire::ProtocolErrorCode::FailedPrecondition,
+            wire::ProtocolErrorCode::IncompatibleMethodManifest,
+            wire::ProtocolErrorCode::Internal,
+        ] {
+            assert!(!terminal.is_retryable(), "{terminal:?} stays terminal");
+        }
+        let constructed =
+            wire::ProtocolError::new(wire::ProtocolErrorCode::Unavailable, "host restarting");
+        assert!(constructed.retryable);
+        let decoded = wire::decode_protocol_error(&serde_json::to_value(&constructed).unwrap())
+            .expect("roundtrip");
+        assert_eq!(decoded, constructed);
+        assert!(
+            wire::decode_protocol_error(&serde_json::json!({"code": "INTERNAL"})).is_err(),
+            "the retryability label is mandatory on the wire"
+        );
+    }
+
+    #[test]
+    fn decoders_reject_contract_violating_payloads() {
+        // pageSize below the contracted floor fails validation...
+        let bad_page = wire::decode_task_list_request(&serde_json::json!({"pageSize": 0}));
+        assert!(bad_page.is_err(), "pageSize 0 violates the contract");
+        // ...and so does a wrong-typed field.
+        let bad_type =
+            wire::decode_task_list_response(&serde_json::json!({"tasks": [{"id": 7, "title": "x", "status": "PENDING"}]}));
+        assert!(bad_type.is_err(), "wrong types must fail decoding");
+    }
 }
 `;
 
+// The generated Rust must be byte-stable and rustfmt-clean: formatting
+// through the project toolchain here guarantees both, so `cargo fmt --check`
+// can never drift from regeneration. Requires the repo's Rust toolchain,
+// which every generation context (contributors and CI) already has.
+function formatRust(source) {
+  const result = spawnSync('rustfmt', ['--edition', '2024', '--emit', 'stdout'], {
+    input: source,
+    encoding: 'utf8',
+    windowsHide: true,
+  });
+  if (result.error !== undefined || result.status !== 0) {
+    throw new Error(
+      `rustfmt failed (${result.status ?? result.error}): ${result.stderr?.trim() ?? 'unknown error'}`,
+    );
+  }
+  return result.stdout;
+}
+
+const rustOut = formatRust(rustOutRaw);
+
 const jsonGolden = await format(
-  JSON.stringify(
-    {
-      manifestFingerprint: manifest.manifestFingerprint,
-      methods: methodsSorted.map((m) => ({
-        name: m.name,
-        kind: m.kind,
-        major: m.version.major,
-        minor: m.version.minor,
-        optional: m.optional,
-        fallback: m.fallback ?? null,
-        requestFingerprint: m.requestFingerprint,
-        responseFingerprint: m.responseFingerprint,
-      })),
-      releasedFloor: floorSorted,
-      bridges: bridgeBindingsSorted.map((bridge) => ({
-        name: bridge.name,
-        olderMinor: bridge.olderMinor,
-        newerMinor: bridge.newerMinor,
-        steps: bridge.steps,
-      })),
+  JSON.stringify({
+    manifestFingerprint: manifest.manifestFingerprint,
+    methods: methodsSorted.map((m) => ({
+      name: m.name,
+      kind: m.kind,
+      major: m.version.major,
+      minor: m.version.minor,
+      optional: m.optional,
+      fallback: m.fallback ?? null,
+      requestFingerprint: m.requestFingerprint,
+      responseFingerprint: m.responseFingerprint,
+    })),
+    releasedFloor: floorSorted,
+    bridges: bridgeBindingsSorted.map((bridge) => ({
+      name: bridge.name,
+      olderMinor: bridge.olderMinor,
+      newerMinor: bridge.newerMinor,
+      steps: bridge.steps,
+    })),
+    errorEnvelope: {
+      name: candidateErrorEnvelope().name,
+      major: ERROR_ENVELOPE_VERSION_MAJOR,
+      minor: ERROR_ENVELOPE_VERSION_MINOR,
+      fingerprint: errorEnvelopeFingerprint(),
     },
-    null,
-    2,
-  ),
+  }),
   { parser: 'json' },
 );
+
+const jsonFixtures = await format(JSON.stringify(await buildWireFixtures()), { parser: 'json' });
 
 const check = process.argv.includes('--check');
 const updateReleasedContract = process.argv.includes('--update-released-contract');
 
 function validateCandidateAgainst(baseline) {
-  return [
+  const violations = [
     ...validateFrozenContractTransition(baseline.methods, candidateContractMethods()),
     ...requiredBridgeCoverageViolations(baseline.methods, METHODS),
   ];
+  // Baselines written before the error envelope joined the frozen contract
+  // are migrated by the explicit release action below; afterwards the
+  // envelope is gated exactly like a method payload.
+  if (baseline.errorEnvelope !== undefined) {
+    violations.push(
+      ...validateFrozenErrorEnvelopeTransition(baseline.errorEnvelope, candidateErrorEnvelope()),
+    );
+  }
+  return violations;
 }
 
 function failOnViolations(violations) {
@@ -434,8 +1189,9 @@ if (updateReleasedContract) {
   }
   const baseline = {
     $comment:
-      'Frozen released-contract baseline: the method contracts as of the last intentional release. ' +
-      'Generation and CI validate the candidate registry against this file; it is never rewritten ' +
+      'Frozen released-contract baseline: the method contracts and the shared ' +
+      'error envelope as of the last intentional release. Generation and CI ' +
+      'validate the candidate registry against this file; it is never rewritten ' +
       'by normal generation. Move it explicitly with: pnpm --filter @lazarus/protocol-ts release:contract',
     manifestFingerprint: manifest.manifestFingerprint,
     methods: METHODS.map((m) => ({
@@ -444,6 +1200,7 @@ if (updateReleasedContract) {
       requestSchema: JSON.parse(canonicalJson(jsonSchemaOf(m.request))),
       responseSchema: JSON.parse(canonicalJson(jsonSchemaOf(m.response))),
     })),
+    errorEnvelope: candidateErrorEnvelope(),
   };
   await mkdir(dirname(baselinePath), { recursive: true });
   await writeFile(
@@ -455,9 +1212,10 @@ if (updateReleasedContract) {
   console.log(`released manifest fingerprint: ${manifest.manifestFingerprint}`);
 } else {
   // Release gate: the candidate registry must be an additive-minor forward
-  // transition from the frozen released contract, and every required method
+  // transition from the frozen released contract, every required method
   // whose minor advanced must keep the released minor interoperable through
-  // a declared bridge - in both generate and --check modes.
+  // a declared bridge, and the error envelope must survive additively -
+  // in both generate and --check modes.
   const baseline = await readBaseline();
   if (baseline === null) {
     console.error(
@@ -473,6 +1231,7 @@ if (updateReleasedContract) {
 
 const rustPath = join(repoRoot, 'crates', 'protocol-rs', 'src', 'generated_registry.rs');
 const jsonPath = join(repoRoot, 'crates', 'protocol-rs', 'tests', 'protocol_manifest.json');
+const fixturesPath = join(repoRoot, 'crates', 'protocol-rs', 'tests', 'wire_fixtures.json');
 
 async function readExisting(path) {
   try {
@@ -507,6 +1266,7 @@ async function writeOrCheck(path, expected, label) {
 
 await writeOrCheck(rustPath, rustOut, 'generated Rust bindings');
 await writeOrCheck(jsonPath, jsonGolden, 'generated JSON golden manifest');
+await writeOrCheck(fixturesPath, jsonFixtures, 'generated wire fixtures');
 
 if (process.exitCode === undefined || process.exitCode === 0) {
   console.log(`manifest fingerprint: ${manifest.manifestFingerprint}`);

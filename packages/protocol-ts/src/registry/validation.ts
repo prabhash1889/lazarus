@@ -414,3 +414,25 @@ export function validateFrozenContractTransition(
   }
   return violations;
 }
+
+/**
+ * One entry of the frozen released-contract baseline's `errorEnvelope`
+ * section: the shared wire error shape as it was at the last intentional
+ * contract release.
+ */
+export interface FrozenErrorEnvelope extends SchemaTransition {
+  readonly name: string;
+}
+
+/**
+ * The error-envelope counterpart of [`validateFrozenContractTransition`]:
+ * the versioned `{protocol.error}` wire shape must survive as an additive
+ * transition exactly like a method payload, so retryability or code changes
+ * can never bypass the release gates.
+ */
+export function validateFrozenErrorEnvelopeTransition(
+  released: FrozenErrorEnvelope,
+  candidate: FrozenErrorEnvelope,
+): CompatibilityViolation[] {
+  return schemaTransitionViolations(released.name, released, candidate);
+}
