@@ -246,9 +246,6 @@ impl Updater {
             expected_sha256: artifact.sha256.clone(),
             expected_size: artifact.size_bytes,
         };
-        // Record intent before the first byte lands so any interruption
-        // leaves resumable state behind rather than orphan bytes.
-        download::persist_partial_meta(&request)?;
         let completed = download::download_resumable(&self.http, &request).await?;
         if completed.resumed_from > 0 {
             tracing::info!(

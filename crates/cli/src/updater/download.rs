@@ -1,7 +1,7 @@
 //! Resumable HTTP downloads with persistent partial state.
 //!
 //! Partial data lives at `<dest>.part` with a sidecar `<dest>.part.json`
-//! describing what the partial bytes belong to (URL, expected digest, total
+//! describing what the partial bytes belong to (expected digest and total
 //! size). A later attempt with the same expectations resumes via a
 //! `Range: bytes=<len>-` request; anything else (mismatched metadata, a
 //! server that ignores Range, an unexpected response) restarts from zero.
@@ -32,7 +32,6 @@ pub struct DownloadRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PartialMeta {
-    url: String,
     expected_sha256: String,
     expected_size: u64,
 }
@@ -70,12 +69,12 @@ pub async fn download_resumable(
     let part = part_path(&request.destination);
     let meta = meta_path(&request.destination);
     let expected = PartialMeta {
-        url: request.url.clone(),
         expected_sha256: normalize_digest(&request.expected_sha256),
         expected_size: request.expected_size,
     };
 
     let existing = load_compatible_partial(&meta, &part, &expected)?;
+    persist_partial_meta(request)?;
     if existing == expected.expected_size {
         // A previous run finished writing but died before verification;
         // skip straight to it instead of asking the server for zero bytes.
@@ -199,8 +198,7 @@ fn load_compatible_partial(
     })();
     match outcome {
         Ok(stored)
-            if stored.url == expected.url
-                && stored.expected_sha256 == expected.expected_sha256
+            if stored.expected_sha256 == expected.expected_sha256
                 && stored.expected_size == expected.expected_size =>
         {
             let len = fs::metadata(part_path)
@@ -227,7 +225,6 @@ pub fn persist_partial_meta(request: &DownloadRequest) -> Result<()> {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
     let stored = PartialMeta {
-        url: request.url.clone(),
         expected_sha256: normalize_digest(&request.expected_sha256),
         expected_size: request.expected_size,
     };
@@ -332,7 +329,6 @@ mod tests {
         assert!(meta.exists());
         let stored: PartialMeta =
             serde_json::from_str(&fs::read_to_string(&meta).expect("read")).expect("valid");
-        assert_eq!(stored.url, "http://127.0.0.1:1/rel");
         assert_eq!(stored.expected_size, PAYLOAD.len() as u64);
         assert_eq!(stored.expected_sha256, sha256_hex(PAYLOAD));
         fs::remove_dir_all(dir).ok();
@@ -348,7 +344,6 @@ mod tests {
         // A later attempt for a different release (different digest):
         // neither the sidecar nor its partial may be reused.
         let other_release = PartialMeta {
-            url: request.url.clone(),
             expected_sha256: "f".repeat(64),
             expected_size: request.expected_size,
         };
@@ -373,7 +368,6 @@ mod tests {
         )
         .expect("oversized partial");
         let expected = PartialMeta {
-            url: request.url.clone(),
             expected_sha256: request.expected_sha256.clone(),
             expected_size: request.expected_size,
         };
@@ -385,6 +379,30 @@ mod tests {
         .expect("evaluated");
         assert_eq!(existing, 0);
         assert!(!dir.join("artifact.part").exists());
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn matching_artifact_resumes_from_a_different_mirror() {
+        let dir = temp_root("mirror");
+        let first = request_for(&dir, "http://127.0.0.1:1/rel");
+        persist_partial_meta(&first).expect("meta written");
+        fs::write(dir.join("artifact.part"), b"some partial bytes").expect("partial");
+
+        let second = request_for(&dir, "http://127.0.0.1:2/rel");
+        let expected = PartialMeta {
+            expected_sha256: normalize_digest(&second.expected_sha256),
+            expected_size: second.expected_size,
+        };
+        assert_eq!(
+            load_compatible_partial(
+                &dir.join("artifact.part.json"),
+                &dir.join("artifact.part"),
+                &expected,
+            )
+            .expect("evaluated"),
+            b"some partial bytes".len() as u64
+        );
         fs::remove_dir_all(dir).ok();
     }
 
