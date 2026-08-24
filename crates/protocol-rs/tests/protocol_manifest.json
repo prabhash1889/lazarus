@@ -1,5 +1,5 @@
 {
-  "manifestFingerprint": "c067c87954bc1132ed27ad7b8edc2c114afdc8d7f159f17cce106f7ec906ac00",
+  "manifestFingerprint": "b223cb9f1c8a8e196d9eb3275723ffd487cf863e1aa0c5addaaca2ec320e6e7d",
   "methods": [
     {
       "name": "process.list",
@@ -20,6 +20,16 @@
       "fallback": null,
       "requestFingerprint": "9b340e5d34ea0ba220224f82203840743d162cd1a786d9b6cf4565af2b80c7b8",
       "responseFingerprint": "74ef7acb510bc418a867f511f39f21f3530fc641f378d2225eb1ccd43c5d41a7"
+    },
+    {
+      "name": "process.resume",
+      "kind": "unary",
+      "major": 1,
+      "minor": 0,
+      "optional": false,
+      "fallback": null,
+      "requestFingerprint": "e665213730d897cc7ca7fa18fa86540f075d4a74b612dd8ddc375903bccb2b33",
+      "responseFingerprint": "30ac63f7dd3e6f1de9379e7897af0166ea4cb4ca3e2f05146360133ffd0a555f"
     },
     {
       "name": "process.start",
@@ -95,6 +105,7 @@
   "releasedFloor": [
     "process.list",
     "process.output",
+    "process.resume",
     "process.start",
     "process.stop",
     "system.getInfo",

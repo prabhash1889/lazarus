@@ -37,6 +37,15 @@ export const StopProcessResponseSchema = z.object({
   status: ProcessStatusSchema,
 });
 
+export const ResumeProcessRequestSchema = z.object({
+  processId: ProcessIdSchema,
+});
+
+export const ResumeProcessResponseSchema = z.object({
+  processId: ProcessIdSchema,
+  status: ProcessStatusSchema,
+});
+
 export const ListProcessesRequestSchema = z.object({});
 
 export const ProcessResourceCountersSchema = z.object({

@@ -19,6 +19,7 @@ export const RELEASED_FLOOR: ReadonlyMap<string, MethodVersion> = new Map([
   ['process.stop', { major: 1, minor: 0 }],
   ['process.list', { major: 1, minor: 0 }],
   ['process.output', { major: 1, minor: 0 }],
+  ['process.resume', { major: 1, minor: 0 }],
 ]);
 
 /** Floor methods missing from (or below floor in) the current registry. */

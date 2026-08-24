@@ -8,6 +8,8 @@ import {
   ListProcessesResponseSchema,
   ProcessOutputRequestSchema,
   ProcessOutputResponseSchema,
+  ResumeProcessRequestSchema,
+  ResumeProcessResponseSchema,
   StartProcessRequestSchema,
   StartProcessResponseSchema,
   StopProcessRequestSchema,
@@ -101,6 +103,14 @@ export const METHODS: readonly MethodDefinition[] = [
     version: { major: 1, minor: 0 },
     request: ProcessOutputRequestSchema,
     response: ProcessOutputResponseSchema,
+    optional: false,
+  },
+  {
+    name: 'process.resume',
+    kind: 'unary',
+    version: { major: 1, minor: 0 },
+    request: ResumeProcessRequestSchema,
+    response: ResumeProcessResponseSchema,
     optional: false,
   },
 ];
