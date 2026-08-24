@@ -384,9 +384,9 @@ struct Subscription {
     /// Direct bounded-broadcast feed with persistent waker state, so a slow
     /// subscriber can never grow memory.
     stream: BroadcastStream<EventFrame>,
-    /// Absolute caller deadline (epoch ms); the stream closes once passed,
-    /// exactly like any other cancellation of the subscription.
-    deadline_epoch_ms: Option<u64>,
+    /// Timer that wakes this stream at the caller deadline even when the
+    /// event feed is idle.
+    deadline: Option<Pin<Box<tokio::time::Sleep>>>,
 }
 
 impl Subscription {
@@ -394,8 +394,8 @@ impl Subscription {
     /// frame flows exactly once: the Phase 1 snapshot is empty and frames
     /// carry no state payload, so none can duplicate it.
     fn poll_next_frame(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<EventFrame>> {
-        if let Some(epoch_ms) = self.deadline_epoch_ms
-            && deadline::unix_now_ms() >= epoch_ms
+        if let Some(timer) = self.deadline.as_mut()
+            && timer.as_mut().poll(cx).is_ready()
         {
             return Poll::Ready(None);
         }
@@ -439,8 +439,8 @@ async fn system_events(
         .get(LAST_OUTAGE_HEADER)
         .and_then(|value| value.to_str().ok())
         .map(str::to_owned);
-    let deadline_epoch_ms = caller_deadline_remaining(&headers)?
-        .map(|remaining| deadline::unix_now_ms().saturating_add(remaining));
+    let deadline = caller_deadline_remaining(&headers)?
+        .map(|remaining| Box::pin(tokio::time::sleep(Duration::from_millis(remaining.max(1)))));
     let bus = &services.state.bus;
     // The Phase 1 snapshot is empty and live frames carry no state payload,
     // so every frame queued from this subscription onward must be delivered
@@ -454,7 +454,7 @@ async fn system_events(
     Ok(Sse::new(Subscription {
         prefix: prefix.into_iter(),
         stream: BroadcastStream::new(rx),
-        deadline_epoch_ms,
+        deadline,
     }))
 }
 
@@ -761,7 +761,7 @@ mod tests {
         Subscription {
             prefix: Vec::new().into_iter(),
             stream: BroadcastStream::new(rx),
-            deadline_epoch_ms: None,
+            deadline: None,
         }
     }
 
@@ -821,7 +821,7 @@ mod tests {
             ]
             .into_iter(),
             stream: BroadcastStream::new(rx),
-            deadline_epoch_ms: None,
+            deadline: None,
         };
         assert_eq!(
             next_frame(&mut sub).await,

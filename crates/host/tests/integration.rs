@@ -532,6 +532,14 @@ impl SseSubscription {
 /// Opens an authenticated SSE subscription with `Connection: close`, so a
 /// finished response is followed by a socket close the client can detect.
 async fn open_sse(addr: SocketAddr, last_outage_id: Option<&str>) -> SseSubscription {
+    open_sse_with_deadline(addr, last_outage_id, None).await
+}
+
+async fn open_sse_with_deadline(
+    addr: SocketAddr,
+    last_outage_id: Option<&str>,
+    deadline: Option<u64>,
+) -> SseSubscription {
     let mut stream = TcpStream::connect(addr)
         .await
         .expect("connect to host for SSE");
@@ -548,6 +556,9 @@ async fn open_sse(addr: SocketAddr, last_outage_id: Option<&str>) -> SseSubscrip
     ));
     if let Some(last_outage_id) = last_outage_id {
         request.push_str(&format!("{LAST_OUTAGE_HEADER}: {last_outage_id}\r\n"));
+    }
+    if let Some(deadline) = deadline {
+        request.push_str(&format!("x-lazarus-deadline: {deadline}\r\n"));
     }
     request.push_str("\r\n");
     stream
@@ -592,6 +603,20 @@ async fn open_sse(addr: SocketAddr, last_outage_id: Option<&str>) -> SseSubscrip
         stream,
         buffered: buffered[head_end + 4..].to_vec(),
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn idle_sse_closes_at_the_caller_deadline() {
+    let (addr, _state) = spawn_host().await;
+    let deadline = protocol_rs::deadline::unix_now_ms() + 100;
+    let mut sse = open_sse_with_deadline(addr, None, Some(deadline)).await;
+
+    assert_eq!(frame_type(&sse.next_frame().await), "outage");
+    assert_eq!(frame_type(&sse.next_frame().await), "snapshot");
+    assert!(
+        sse.drain_frames_until_eof().await.is_empty(),
+        "an idle stream closes without fabricating frames"
+    );
 }
 
 fn frame_type(frame: &serde_json::Value) -> &str {

@@ -196,6 +196,16 @@ mod tests {
             EventFrame::Live { sequence: 7 }.encode(),
             r#"{"type":"live","sequence":7}"#
         );
+
+        for frame in [
+            EventFrame::tombstone("outage-1"),
+            EventFrame::authoritative_snapshot(),
+            EventFrame::Live { sequence: 7 },
+        ] {
+            let value = serde_json::to_value(frame).expect("event frame serializes");
+            protocol_rs::generated_registry::wire::decode_system_subscribe_events_response(&value)
+                .expect("hand-written event frame matches the generated wire contract");
+        }
     }
 
     #[test]

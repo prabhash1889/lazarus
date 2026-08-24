@@ -178,7 +178,7 @@ fn describe_host_error(status: u16, body: &str) -> String {
     let decoded = serde_json::from_str::<serde_json::Value>(body)
         .ok()
         .and_then(|value| wire::decode_protocol_error(&value).ok());
-    match decoded {
+    match decoded.filter(|error| error.retryable == error.code.is_retryable()) {
         Some(error) => format!(
             "host rejected the request: {} [{}]{}",
             error.message,
@@ -459,6 +459,11 @@ mod tests {
         // instead of being trusted.
         let off_contract = describe_host_error(500, r#"{"code":"INTERNAL"}"#);
         assert!(off_contract.contains("HTTP 500"), "{off_contract}");
+        let inconsistent = describe_host_error(
+            499,
+            r#"{"code":"CANCELLED","message":"stopped","retryable":true}"#,
+        );
+        assert!(inconsistent.contains("HTTP 499"), "{inconsistent}");
     }
 
     #[test]

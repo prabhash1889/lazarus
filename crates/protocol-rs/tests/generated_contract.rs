@@ -3,6 +3,9 @@
 //! golden JSON is emitted by the same generator run that produced
 //! `src/generated_registry.rs`, so any drift fails here.
 
+use protocol_rs::generated_registry::wire::{
+    ERROR_ENVELOPE_FINGERPRINT, ERROR_ENVELOPE_MAJOR, ERROR_ENVELOPE_MINOR,
+};
 use protocol_rs::generated_registry::{
     BridgeStep, MANIFEST_FINGERPRINT, METHOD_BINDINGS, METHOD_BRIDGES, binding_by_name,
 };
@@ -70,6 +73,21 @@ fn generated_registry_matches_typescript_manifest() {
         .map(|value| value.as_str().expect("floor name"))
         .collect();
     assert_eq!(rust_floor, json_floor, "released floor drifted");
+
+    let error = &golden["errorEnvelope"];
+    assert_eq!(
+        error["major"].as_u64().unwrap() as u32,
+        ERROR_ENVELOPE_MAJOR
+    );
+    assert_eq!(
+        error["minor"].as_u64().unwrap() as u32,
+        ERROR_ENVELOPE_MINOR
+    );
+    assert_eq!(
+        error["fingerprint"].as_str().unwrap(),
+        ERROR_ENVELOPE_FINGERPRINT,
+        "error envelope fingerprint drifted"
+    );
 }
 
 #[test]
