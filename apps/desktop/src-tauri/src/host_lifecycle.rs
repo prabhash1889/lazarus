@@ -16,6 +16,9 @@ use tokio::process::Command;
 const START_TIMEOUT: Duration = Duration::from_secs(30);
 const STOP_TIMEOUT: Duration = Duration::from_secs(30);
 const DOCTOR_TIMEOUT: Duration = Duration::from_secs(30);
+/// Installs and updates download release artifacts, which can be large;
+/// the CLI owns resumability so a timeout here is never data loss.
+const UPDATE_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// Keep the helper console invisible on Windows; the CLI output is captured,
 /// never shown in a terminal of its own.
@@ -206,6 +209,72 @@ pub async fn host_doctor() -> DoctorResult {
             error: Some(error),
         },
     }
+}
+
+/// Shared shape for install/update/rollback: run the CLI, surface failures
+/// in-band, and project the JSON state onto an action result.
+async fn run_action(args: &[&str], timeout: Duration, command: &str) -> ActionResult {
+    match run_cli(args, timeout).await {
+        Ok(output) => {
+            if let Some(error) = failure_of(&output, command) {
+                return ActionResult {
+                    ok: false,
+                    detail: None,
+                    error: Some(error),
+                };
+            }
+            match parse_json(&output, command) {
+                Ok(value) => action_from_output(&value),
+                Err(error) => ActionResult {
+                    ok: false,
+                    detail: None,
+                    error: Some(error),
+                },
+            }
+        }
+        Err(error) => ActionResult {
+            ok: false,
+            detail: None,
+            error: Some(error),
+        },
+    }
+}
+
+/// Bootstraps (or repairs) the Host installation through the bundled CLI.
+/// `ensure` is deliberately idempotent: it installs only when the
+/// installed release is missing or differs from the manifest.
+#[tauri::command]
+pub async fn host_ensure(manifest: String) -> ActionResult {
+    run_action(
+        &["host", "ensure", "--manifest", &manifest, "--json"],
+        UPDATE_TIMEOUT,
+        "host ensure --json",
+    )
+    .await
+}
+
+/// Updates the Host installation through the bundled CLI. The CLI refuses
+/// to touch an install while its Host is running and reports that in-band.
+#[tauri::command]
+pub async fn host_update(manifest: String) -> ActionResult {
+    run_action(
+        &["host", "update", "--manifest", &manifest, "--json"],
+        UPDATE_TIMEOUT,
+        "host update --json",
+    )
+    .await
+}
+
+/// Rolls the Host installation back to the retained previous release via
+/// the bundled CLI.
+#[tauri::command]
+pub async fn host_rollback() -> ActionResult {
+    run_action(
+        &["host", "rollback", "--json"],
+        STOP_TIMEOUT,
+        "host rollback --json",
+    )
+    .await
 }
 
 /// Projects a lifecycle action's JSON onto the UI result. The CLI's stable
