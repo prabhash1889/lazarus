@@ -3538,35 +3538,161 @@ Pull the network during a Host update, reconnect, resume download, promote atomi
 
 ### Goal
 
-Create the reusable UI architecture.
+Create the reusable UI architecture. Build it in ordered sub-phases so each layer (shell, connection, navigation, layout, accessibility) is verified before feature screens ever depend on it. No Phase 3 sub-phase adds product features beyond the minimum needed to prove its own layer.
+
+## Phase 3.1 — Tauri app shell and UI foundation
+
+### Goal
+
+Stand up a launching, styled, crash-safe desktop application shell on all supported platforms.
 
 ### Build
 
-- Tauri app;
-- Router;
-- Query client;
-- global error boundary;
-- connection manager;
-- theme;
-- command palette;
-- toast/notification system;
-- keyboard shortcut manager;
-- header tab strip for Epic, Draft, History, and Settings;
-- persisted pane/split tile canvas skeleton;
-- virtualized large lists;
-- accessibility primitives;
-- crash-safe window state.
+- Tauri 2 project under `apps/desktop`: window creation, single-instance guard, native menu skeleton, deep-link registration hook (payload validation comes in Phase 20);
+- React 19 + TypeScript strict mode + Vite build pipeline wired into the Nx workspace;
+- TanStack Router with typed routes, lazy-loaded route chunks, and route-level error/loading boundaries;
+- TanStack Query client installed once with shared defaults (retry policy, staleness, error surfacing to the toast system);
+- global error boundary plus per-route fallbacks so an uncaught render error never blanks the window;
+- design-token theme system: light/dark palettes, color/spacing/typography scales, shadcn/ui or Radix primitives installed and themed;
+- crash-safe window state: persist geometry, size, and maximized state; restore after normal close and abnormal kill;
+- Zustand store conventions documented for transient UI state only;
+- CI jobs that produce debug desktop packages for Windows, macOS, and Linux on every push.
 
-Screens:
+### Screens
 
-- Home;
-- Settings;
-- Host status;
-- empty Epic/Task canvas.
+- minimal Home placeholder that proves routing works.
+
+### Tests
+
+- packaged builds install and launch on Windows (WebView2), macOS (WKWebView), and Linux (WebKitGTK);
+- forcing an uncaught render error shows the boundary with a recovery action, not a white screen;
+- force-killing the process preserves window geometry where the platform allows.
 
 ### Exit gate
 
-Windows/macOS/Linux packages launch, connect to Host, restore header tabs and canvas splits, and pass basic accessibility checks. Track xterm/diff/editor rendering separately on WebView2, WKWebView, and WebKitGTK.
+Windows/macOS/Linux packages install and launch, render the themed shell with working routing, and recover cleanly from a hard kill.
+
+## Phase 3.2 — Host connection manager and status surface
+
+### Goal
+
+Make the Desktop a resilient, authenticated protocol client of the local Host before any feature screens exist.
+
+### Build
+
+- protocol client singleton speaking the Lazarus Protocol over Windows named pipe / Unix domain socket, using the bindings generated from `packages/protocol-ts`;
+- local bootstrap-token loading from the Host identity directory with user-only permissions;
+- connection state machine: `DISCONNECTED -> CONNECTING -> AUTHENTICATED`, with `RECONNECTING` and `DEGRADED` states visible in the UI;
+- automatic reconnect with capped exponential backoff and jitter when the Host drops;
+- resubscribe all active streams after reconnect and repair missed deltas from authoritative snapshots (restart tombstones are honored for deduplication);
+- unary request cancellation plumbed end to end;
+- Host status screen: Host version, negotiated per-method manifest summary, health, uptime, last error;
+- toast/notification subsystem fed by connection events (`System.SubscribeEvents`) so every later feature gets notifications for free.
+
+### Screens
+
+- Host status.
+
+### Tests
+
+- stop the Host while the Desktop is open: disconnect is surfaced within a second and requests fail with typed errors, not hangs;
+- restart the Host: Desktop reconnects automatically, resubscribes, and restores live data without user action;
+- an unauthenticated or wrong-token connection attempt fails with a clear error.
+
+### Exit gate
+
+The packaged Desktop connects to the authenticated local Host, survives Host restarts by reconnecting and resubscribing automatically, and reflects accurate connection status throughout.
+
+## Phase 3.3 — Command palette, shortcuts, and navigation screens
+
+### Goal
+
+Give users fast, discoverable navigation over the shell before feature panels arrive.
+
+### Build
+
+- command registry: id, title, keyword aliases, handler, availability predicate, shortcut binding;
+- fuzzy-matched command palette with recency weighting, accessible from everywhere;
+- keyboard shortcut manager: single keys and chords, conflict detected and rejected at registration time, user-facing cheat-sheet panel;
+- Home screen: registered workspaces list placeholder, recent Tasks placeholder, quick actions (open workspace, new Task, host status);
+- Settings shell: navigation structure with placeholder panels for providers, appearance, usage/budget, keybindings, notifications, and diagnostics (each filled by later phases);
+- shared virtualized list primitive: windowing, variable row heights, sticky headers, keyboard navigation - reused by every later panel.
+
+### Screens
+
+- Home;
+- Settings.
+
+### Tests
+
+- every destination is reachable via mouse, palette, and keyboard shortcuts;
+- registering two conflicting shortcuts fails loudly in dev and shows which registration lost;
+- a synthetic 50k-row list scrolls smoothly and keeps DOM node count bounded under virtualization.
+
+### Exit gate
+
+Users can reach Home, Settings, and Host status entirely via keyboard and palette, and large lists stay responsive.
+
+## Phase 3.4 — Header tab strip and persisted tile canvas
+
+### Goal
+
+Build the signature layout primitives before any feature screen exists so they are not retrofitted later (parity contract rule 4).
+
+### Build
+
+- header tab strip implementing `Epic | Draft | History | Settings`: multiple simultaneous Epic tabs, drag reorder, overflow menu, middle-click/close-affordance semantics;
+- tile canvas layout model: binary split tree (direction + ratio) serialized as JSON, supporting nested arbitrary depth;
+- tile operations: open, focus, close, resize, move between panes, split pane, maximize/restore;
+- per-Task layout persistence through a Host-persisted record so tabs and splits restore exactly across restarts and machines-local reinstalls;
+- closing a tab or tile never deletes its underlying agent/artifact/task entity; multiple tiles may bind to the same durable entity simultaneously;
+- empty Epic/Task canvas rendered inside an Epic tab as the first real canvas content;
+- Draft screen as pre-Task composer placeholder;
+- History screen listing prior Tasks with filters (stub data acceptable until Phase 8 delivers real Tasks).
+
+### Screens
+
+- empty Epic/Task canvas inside the tab strip;
+- Draft;
+- History.
+
+### Tests
+
+- arrange a multi-level split layout, fully quit the Desktop, relaunch, and verify pixel-exact restoration of tabs and splits;
+- closing a tile leaves its backing entity intact and reopenable;
+- two tiles bound to the same entity stay in sync;
+- tab overflow behaves correctly with 20+ open Epics.
+
+### Exit gate
+
+Open tabs and canvas splits persist across Desktop restarts, tiles can be freely arranged, closing anything is non-destructive, and the Draft/History surfaces render within the same shell.
+
+## Phase 3.5 — Accessibility and cross-WebView validation
+
+### Goal
+
+Prove the shell is accessible and behaves consistently across all three WebView engines before feature work begins.
+
+### Build
+
+- accessibility primitives applied across everything built in 3.1-3.4: focus management, roving tabindex, ARIA roles for tabs/tiles/dialogs/lists;
+- focus trapping and restoration for modals, palette, and drawers;
+- reduced-motion support honoring OS preferences;
+- contrast-verified theme tokens for both light and dark modes;
+- automated accessibility checks (axe-core or equivalent) running against Phase 3 screens in CI;
+- per-engine rendering matrix for the heavy components (xterm.js, diff view, CodeMirror/editor) prototyped and exercised on WebView2, WKWebView, and WebKitGTK;
+- documented engine-specific defects and their mitigations/workarounds.
+
+### Tests
+
+- automated accessibility scans pass on the shell and all Phase 3 screens;
+- keyboard-only traversal reaches every interactive element with visible focus;
+- screen-reader smoke pass on the tab strip and canvas announces structure sensibly;
+- xterm/diff/editor prototypes render and accept input on each engine, with results recorded in a tracking table.
+
+### Exit gate
+
+Phase 3 screens pass basic accessibility checks on all platforms, and xterm/diff/editor rendering status is tracked separately on WebView2, WKWebView, and WebKitGTK with known gaps documented. Do not start Phase 4 until this gate passes.
 
 ---
 
@@ -3574,40 +3700,116 @@ Windows/macOS/Linux packages launch, connect to Host, restore header tabs and ca
 
 ### Goal
 
-Open and inspect real repositories.
+Open and inspect real repositories. Split into sub-phases so registration/trust lands before browsing, and live updates land before performance sign-off.
+
+## Phase 4.1 — Workspace registration and repository detection
+
+### Goal
+
+Register a local directory as a first-class Workspace with complete repository metadata.
 
 ### Build
 
-Host modules:
+- `Workspace.Register` RPC: canonicalize the path, reject paths outside allowed roots, return a stable workspace id;
+- Git repository detection, repo root discovery, submodule and linked-worktree detection;
+- remote enumeration and repository fingerprint computation;
+- project language/toolchain detection (manifest-based: package.json, Cargo.toml, pyproject.toml, go.mod, etc.);
+- repo instruction file detection: `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md`, `.github/copilot-instructions.md`, Lazarus instructions - parsed as untrusted data per section 15.6;
+- workspace registry persistence in SQLite with update-on-reopen semantics;
+- initial index-state placeholder rows so Phase 10 can attach to them;
+- minimal workspace picker UI on the Home screen (add/remove/switch workspaces).
 
-- workspace registration;
-- canonical paths;
-- Git detection;
-- `.gitignore` handling;
-- file tree;
-- safe text file read;
-- binary detection;
-- file metadata;
-- watch subscriptions;
-- external editor discovery.
+### Tests
 
-UI:
-
-- workspace picker;
-- file tree;
-- file preview;
-- search by path;
-- open externally;
-- copy path.
-
-Security:
-
-- workspace trust;
-- symlink containment.
+- registering the same canonical path twice returns the same workspace id;
+- registering a non-Git directory succeeds with `vcs_type: none` instead of failing;
+- instruction files are detected but their content never executes or elevates permissions.
 
 ### Exit gate
 
-Open a monorepo, browse 50k+ files smoothly, edit externally, and see file events update without reloading.
+A directory opened from the Desktop becomes a durable Workspace with correct Git/remotes/fingerprint/toolchain metadata persisted across Host restarts.
+
+## Phase 4.2 — File tree and file access
+
+### Goal
+
+Browse and read repository files safely at scale.
+
+### Build
+
+- lazy, paginated `File.Tree` RPC with per-directory expansion (no full-repo serialization);
+- `.gitignore` and ignore-rule handling consistent with the future index pipeline (section 15.2);
+- safe text file read with encoding detection and size caps;
+- binary detection and binary-file metadata response;
+- file metadata RPC: size, mtime, symlink target, line count for text;
+- Desktop file tree panel bound to the tile canvas, with virtualization via the Phase 3 list primitive;
+- file preview tile with syntax highlighting for common languages;
+- search-by-path (fuzzy filename matching against the tree cache).
+
+### UI
+
+- workspace file tree tile;
+- file preview tile;
+- open externally, reveal in file manager, copy path actions.
+
+### Tests
+
+- browse a 50k+ file monorepo smoothly; expanding deep directories stays responsive;
+- reading an oversized or binary file returns typed metadata instead of garbage;
+- symlinked entries render with an indicator and do not allow escaping the workspace root on preview.
+
+### Exit gate
+
+Open a monorepo, browse 50k+ files smoothly, and preview any text file safely.
+
+## Phase 4.3 — File watching and live updates
+
+### Goal
+
+Make the file tree and previews live without polling or reloads.
+
+### Build
+
+- Host-side watcher service (notify) per registered workspace with recursive watching and event debounce/coalescing;
+- watch subscriptions over the protocol: subscribe by workspace, subtree prefix, or specific paths;
+- event payloads carry enough info for clients to patch trees incrementally rather than refetching;
+- external editor discovery (VS Code, JetBrains, platform default) with configurable command templates;
+- reconnect behavior: watchers resubscribe and send a reconciliation diff after Host restart;
+- bounded event queue with backpressure so a churning build directory cannot flood the Desktop.
+
+### Tests
+
+- edit/save/rename/delete externally and observe tree + open preview update within the debounce window;
+- pause the Host mid-edit storm, restart it, verify reconciliation produces a correct final state;
+- generate 10k rapid changes and verify coalescing keeps both Host CPU and UI responsive.
+
+### Exit gate
+
+Edit files externally and see file events update the tree and open previews without reloading.
+
+## Phase 4.4 — Workspace trust and containment hardening
+
+### Goal
+
+Prove the workspace subsystem is safe against hostile repositories before agents ever touch it.
+
+### Build
+
+- explicit trust model: unknown repos open untrusted; untrusted workspaces suppress hook execution, script auto-run, and instruction promotion (section 31.3);
+- trust elevation prompt with clear consequences; trust state persisted per fingerprint;
+- symlink containment on every path-returning RPC: resolved paths validated to stay inside the workspace root;
+- Windows long-path and UNC-path normalization tests;
+- path traversal fixtures (encoded separators, junctions, case-insensitivity tricks) rejected with typed errors.
+
+### Tests
+
+- a repo containing a malicious `AGENTS.md` cannot execute anything or alter permissions in an untrusted workspace;
+- a symlink pointing outside the workspace fails reads/tree-expansion with a typed error;
+- traversal fixture suite passes on all three platforms.
+
+### Exit gate
+
+Denied paths are actually denied at the Host boundary, untrusted workspaces are inert, and no known path-escape exists in the file subsystem.
 
 ---
 
@@ -3615,34 +3817,86 @@ Open a monorepo, browse 50k+ files smoothly, edit externally, and see file event
 
 ### Goal
 
-Make isolated execution dependable.
+Make isolated execution dependable. Read models first, then worktree lifecycle, then collision/integration safety.
+
+## Phase 5.1 — Git read model and diff data
+
+### Goal
+
+Give the UI and later phases a reliable, subscribable view of repository Git state.
 
 ### Build
 
-- repo status;
-- branches;
-- commits;
-- diff;
-- worktree discovery;
-- worktree create/remove/prune;
-- branch naming;
-- repo lock;
-- worktree setup hooks;
-- conflict detection;
-- changed-file subscriptions;
-- diff renderer data model.
+- repo status RPC: branch, upstream, dirty/clean, staged/unstaged/untracked sets;
+- branch list with current/upstream/ahead-behind;
+- commit log queries (paginated) for a ref or range;
+- diff computation: worktree vs index, index vs HEAD, ref range, single file - with stable diff IDs the UI can reference;
+- changed-file subscriptions: live updates when Git state changes under an active Task/workspace;
+- diff renderer data model: hunks, line-level attribution hooks, rename/binary markers - designed so Phase 24-style per-agent attribution can attach later without a schema break;
+- Git Diff panel tile in the Desktop using this data.
 
-UI:
+### Tests
 
-- worktree picker;
-- Git Diff panel;
-- changed files;
-- conflict state;
-- branch/base information.
+- make external commits/stage operations and verify subscriptions update the panel live;
+- large diffs (10k+ lines, renames, binaries) render without blocking the Host or UI;
+- diff IDs remain stable across subscription reconnects via snapshot reconciliation.
 
 ### Exit gate
 
-Create three parallel worktrees, make changes, inspect distinct diffs, integrate one, and cleanly prune.
+The Desktop shows accurate, live-updating status/branches/diffs for a real repository, driven entirely by subscribable Host data.
+
+## Phase 5.2 — Worktree lifecycle
+
+### Goal
+
+Create, track, and clean up agent run locations reliably.
+
+### Build
+
+- worktree discovery: enumerate existing Git worktrees and reconcile them into the Worktree table;
+- `Worktree.Create`: repo lock acquisition, optional fetch, base-ref validation, unique branch naming (`lazarus/task-<id>/<slug>`), empty-target-dir check, creation, readiness marking;
+- setup hooks: user-configured commands run post-create with policy-governed permissions;
+- safe untracked template copying only when policy permits; environment file detection reported to the user;
+- `Worktree.Remove` / `Prune` / `Repair` with metadata retention after physical removal where useful;
+- worktree ownership tracking (`owner_agent_id`) ready for Phase 8;
+- worktree picker UI on the Task surface and CLI parity: `lazarus worktree list/create/remove/prune`.
+
+### Tests
+
+- create three parallel worktrees from one workspace concurrently without lock contention failures;
+- kill the Host mid-create and verify no orphaned half-created worktree is marked ready;
+- prune removes stale entries but never touches unmerged branches without explicit confirmation.
+
+### Exit gate
+
+Create three parallel worktrees, make changes in each, see them all listed with correct status/ownership, and cleanly remove/prune one.
+
+## Phase 5.3 — Collision management and integration basics
+
+### Goal
+
+Prevent parallel-agent collisions and integrate isolated changes back safely.
+
+### Build
+
+- file/symbol scope estimation per planned unit of work (feeds off Phase 12 plans later);
+- predicted-overlap detection between concurrent write agents with warnings before start;
+- actual concurrent modification detection while agents run;
+- path leases for high-risk files with UI visibility;
+- never silently merge conflicting work - conflicts always stop for human decision;
+- integration operations: cherry-pick, merge, rebase, patch apply, selective file adoption, each behind explicit user action or policy;
+- `IntegrationEvidence` record persisted for every integration: source agent/worktree/commits, target branch, conflict status, tests-run-after pointer;
+- conflict state surfaced in the Git Diff panel with resolution guidance.
+
+### Tests
+
+- two agents writing the same file produce a pre-start warning and/or serialized execution per policy;
+- a conflicting integration stops with a clear conflict view instead of a broken tree;
+- every successful integration yields queryable IntegrationEvidence.
+
+### Exit gate
+
+Detect predicted and actual collisions between parallel write agents, integrate one worktree's changes into another target with full evidence, and prove conflicts halt rather than auto-resolve.
 
 ---
 
@@ -3650,35 +3904,87 @@ Create three parallel worktrees, make changes, inspect distinct diffs, integrate
 
 ### Goal
 
-Reliable interactive shells.
+Reliable interactive shells. Get raw PTY streaming correct, then the UI, then durability across restarts.
+
+## Phase 6.1 — PTY abstraction and process streaming
+
+### Goal
+
+Own cross-platform pseudo-terminal creation and byte-accurate streaming inside `lazarus-hostd`.
 
 ### Build
 
-- PTY abstraction;
-- ConPTY;
-- Unix PTY;
-- xterm integration;
-- resize;
-- copy/paste;
-- links;
-- search;
-- terminal naming;
-- process exit;
-- keepalive;
-- terminal list;
-- bounded replay.
+- PTY abstraction layer over portable-pty with platform backends: Unix PTY and Windows ConPTY;
+- process spawn under OS process groups / Windows Job Objects so the full tree can be terminated;
+- binary-safe stream framing from Host to clients (no line-based assumptions);
+- resize propagation in both directions;
+- UTF-8 and ANSI pass-through without reinterpretation;
+- bounded replay/spool: per-terminal ring buffer with configurable size caps persisted to spool files;
+- resource counters per supervised terminal: bytes in/out, CPU/memory of the child tree where the OS exposes it;
+- environment sanitization on spawn (no accidental Host/CLI secret leakage);
+- keepalive/liveness detection distinguishing hung output from dead process.
 
-Host crash behavior:
+### Tests
 
-- a PTY cannot truly survive daemon death unless separately supervised, so either:
-  - run PTYs under a dedicated supervisor process; or
-  - mark them disconnected and restart explicitly.
-
-Recommended: dedicated process supervisor owned by Host installation, so the UI/Host control process can restart without killing agent CLIs.
+- run interactive programs (vim-style redraws, progress bars) through ConPTY and Unix PTY with correct rendering bytes;
+- resize during heavy output does not corrupt the stream;
+- killing the Host terminates the entire child tree via process group/Job Object on each platform;
+- a process emitting gigabytes is capped by the spool policy without unbounded disk growth.
 
 ### Exit gate
 
-Long-running build continues while Desktop closes and reopens; terminal state reconnects correctly.
+Start, stream, resize, and terminate a supervised PTY process on all three platforms with bounded resources and clean teardown of the whole process tree.
+
+## Phase 6.2 — Plain terminal UI
+
+### Goal
+
+Ship the user-owned plain terminal as a first-class tile.
+
+### Build
+
+- xterm.js integration bound to the Phase 6.1 streaming protocol, with batched rendering (no per-character React state updates);
+- copy/paste including platform-specific clipboard behaviors;
+- clickable links and OSC 8 hyperlink support where available;
+- in-terminal search;
+- terminal naming and persistence-friendly identity;
+- terminal list panel; open/close/focus terminals as canvas tiles;
+- process exit states surfaced clearly (exit code, signal, killed-by-policy);
+- scrollback behavior consistent with the bounded replay window, with an explicit "load more history" affordance.
+
+### Tests
+
+- long-running output-heavy command maintains interactive feel and never freezes the renderer thread;
+- paste of large multi-KB content works;
+- closing a terminal tile kills or detaches per explicit user choice, never silently.
+
+### Exit gate
+
+Plain terminals are fully usable daily-driver shells inside the Desktop on all platforms.
+
+## Phase 6.3 — Terminal durability across restarts
+
+### Goal
+
+Make terminal state honest across Desktop and Host lifecycle events.
+
+### Build
+
+- decision recorded per section 20/0.3: PTYs stay under `hostd` supervision for 1.0; when the Host dies unexpectedly, terminals are marked `DISCONNECTED`/`INTERRUPTED` rather than pretending to survive;
+- explicit restart action per terminal after Host recovery (or provider-supported resume once agents exist);
+- Desktop close/reopen: live terminals keep running under the Host; reconnect restores output from bounded replay plus resubscription;
+- Host restart mid-command: interruption records persisted (Phase 2.2 semantics) and surfaced in the terminal list;
+- terminal metadata persistence: command, PID, start/end times, exit state, transcript reference.
+
+### Tests
+
+- start a long-running build, close and reopen the Desktop, reconnect to the same terminal and continue observing it;
+- kill -9 the Host during a build, restart it, verify the terminal shows interrupted state and offers explicit restart;
+- verify no terminal claims "running" when its process is provably dead.
+
+### Exit gate
+
+A long-running build continues while the Desktop closes and reopens; terminal state reconnects correctly, and a Host crash produces honest interrupted state with explicit recovery actions instead of stale lies.
 
 ---
 
@@ -3686,43 +3992,109 @@ Long-running build continues while Desktop closes and reopens; terminal state re
 
 ### Goal
 
-Launch real coding agents behind a common abstraction.
+Launch real coding agents behind a common abstraction. Build the registry/framework first, prove it with a fake provider, then land real adapters, then expose them in UI.
+
+## Phase 7.1 — Provider registry, profiles, and credentials
+
+### Goal
+
+Give providers durable, secure configuration before any adapter logic exists.
 
 ### Build
 
-- provider registry;
-- profile storage;
-- keychain references;
-- CLI detection;
-- protocol-level provider management: list, detect version, enable/disable, custom path, existing-subscription login, API key, environment overrides, model catalog, and rate-limit usage;
-- delegated interactive login lifecycle: start, await, submit code when required, touch, and cancel;
-- model discovery interface;
-- adapter capability matrix;
-- three adapter classes: managed conversation, structured CLI, interactive Terminal Agent;
-- binary/version probe;
-- supported-version registry;
-- provider golden fixture harness;
-- explicit incompatible/unverified state;
-- handoff template loader;
-- OpenCode adapter;
-- Codex adapter;
-- Claude Code adapter;
-- generic OpenAI-compatible API adapter;
-- fake provider for tests.
+- provider registry: installed providers, enabled state, pack versions;
+- `ProviderProfile` storage (id, type, display name, auth method, CLI path, env overrides, defaults) in SQLite with secrets referenced by keychain id only;
+- OS keychain integration via keyring for all credential storage - never SQLite, never config files;
+- CLI detection: PATH scan plus explicit path override per profile;
+- protocol-level provider management RPCs: list, detect version, enable/disable, set custom path, configure env overrides;
+- delegated interactive login lifecycle: start flow, await external completion, submit code when required, touch/refresh, cancel - supporting existing provider subscriptions (BYOA);
+- API-key auth path for API adapters with masked display everywhere.
 
-UI:
+### Tests
 
-- Providers settings;
-- connection test;
-- model picker;
-- capability display;
-- CLI path selector;
-- environment overrides.
-- first-run onboarding: detect installed CLIs, connect one provider, open a repository, create the first Task, and run the first verified change.
+- killing the Host never leaves credentials outside the keychain;
+- enabling/disabling a profile is reflected immediately to connected clients;
+- an interactive login can be cancelled mid-flow without corrupting profile state.
 
 ### Exit gate
 
-Same Task can create sessions on at least three distinct adapters without core orchestration depending on provider names; installing an intentionally unsupported CLI version produces a clear compatibility error rather than corrupt parsing.
+Providers can be registered, configured, authenticated (CLI subscription or API key), persisted securely, and managed over the protocol.
+
+## Phase 7.2 — Adapter framework and capability probing
+
+### Goal
+
+Define the three execution classes and honest capability discovery before writing any specific adapter.
+
+### Build
+
+- `ProviderAdapter` trait implementation surface with the Phase 13.2 class split: managed conversation adapters, machine-readable CLI adapters, interactive terminal-agent adapters;
+- binary/version probe pipeline with supported-version registry per provider pack;
+- capability probe matrix (`ProviderCapabilities`) recorded at runtime: chat, terminal, model list, reasoning effort, resume, tool calls, structured output, usage reporting, A2A inbox, native MCP;
+- explicit `unsupported` / `installed-but-unverified` states surfaced instead of mysterious failures; unknown/newer versions run only if the pack marks forward compatibility safe;
+- compatibility registry persistence: detected version, pack version, auth status, probe results, last smoke-test timestamp;
+- golden fixture harness: recorded structured streams replayed deterministically in tests (section 32.8);
+- fake provider implementing every adapter behavior branch for tests: success, malformed output, timeout, rate limit, resume, crash, partial usage, permission denial;
+- handoff template loader for `provider-packs/<provider>/handoff/` templates (section 13.7).
+
+### Tests
+
+- every fixture replays identically across runs;
+- an intentionally unsupported CLI version produces a clear compatibility error, never corrupted parsing;
+- capability claims are derived only from probes, never hardcoded assumptions.
+
+### Exit gate
+
+The framework, probing, fixtures, and fake provider are complete such that adding a new adapter requires no core changes.
+
+## Phase 7.3 — First real adapters
+
+### Goal
+
+Land the priority adapters against the 7.2 framework.
+
+### Build
+
+- OpenCode adapter (generic harness first), Codex adapter, Claude Code adapter - each as a provider pack declaring manifest, compatibility range, capabilities, fixtures;
+- generic OpenAI-compatible API adapter (chat turns, streaming, usage extraction, Lazarus-owned sessions);
+- OpenRouter adapter reusing the OpenAI-compatible path;
+- per-adapter structured output parsers preserving unknown provider fields as opaque metadata;
+- session/resume handling per documented semantics only; no scraping ANSI output where a machine-readable mode exists;
+- nightly real-provider smoke tests isolated from deterministic CI.
+
+### Tests
+
+- contract tests pass against golden fixtures for each adapter;
+- live smoke tests (secrets-gated) verify current CLI versions still parse;
+- cancellation mid-stream terminates cleanly on every adapter.
+
+### Exit gate
+
+Same Task can create sessions on at least three distinct adapters without core orchestration depending on provider names.
+
+## Phase 7.4 — Providers settings UI and first-run onboarding
+
+### Goal
+
+Expose providers honestly and get a new user to a working agent quickly.
+
+### Build
+
+- Providers settings panel: detected CLIs, enable/disable, connection test, model catalog browser, capability display (truthful per probe), CLI path selector, environment override editor, auth/login flows with status;
+- model picker component reused later by the agent composer;
+- rate-limit/usage surfacing where providers report it;
+- first-run onboarding flow: detect installed CLIs -> connect one provider -> open a repository -> create the first Task -> run the first verified change;
+- skip/detect-later paths so onboarding never blocks manual configuration.
+
+### Tests
+
+- onboarding completes on a clean machine with exactly one pre-installed CLI;
+- connection test reports precise failure reasons (not found / auth expired / unsupported version);
+- capability display matches actual probe results in all cases.
+
+### Exit gate
+
+A user installs an intentionally unsupported CLI version and gets a clear compatibility error rather than corrupt parsing, and a clean-machine user reaches their first working agent through onboarding.
 
 ---
 
@@ -3730,47 +4102,92 @@ Same Task can create sessions on at least three distinct adapters without core o
 
 ### Goal
 
-Introduce the central user workflow.
+Introduce the central user workflow. Domain persistence first, agent runtime second, UI surfaces third, then the mandatory vertical-slice checkpoint before anything else is built.
+
+## Phase 8.1 — Task domain and persistence
+
+### Goal
+
+Make Tasks durable aggregates that survive any restart.
 
 ### Build
 
-Task:
+- Task CRUD: create, rename, archive, reopen, delete-with-confirmation; status transitions per Appendix A.1 state machine with all transitions emitting events;
+- TaskWorkspace association: attach one or more workspaces, set default run location and base ref;
+- task-scoped event ledger rows (`agent_events`) created from day one;
+- Draft-to-Task conversion in the Desktop composer;
+- Task tabs bound to durable Task ids; History screen now backed by real data;
+- task list/show/export RPCs plus CLI parity: `lazarus task create/list/show/run/stop`;
+- crash-recovery semantics: `RUNNING` tasks reconciled on Host startup per section 39.1.
 
-- create;
-- rename;
-- archive;
-- reopen;
-- attach workspaces;
-- status/history.
+### Tests
 
-Agent:
-
-- create;
-- rename;
-- delete;
-- Chat/Terminal interface type;
-- provider/model;
-- worktree/run location;
-- agent tree;
-- run states;
-- persisted upstream session id.
-
-UI:
-
-- Task tabs;
-- Agents panel;
-- Agent canvas;
-- Terminal Agent;
-- context inspector.
+- restart Desktop and Host mid-task; reopen preserves title, status, workspace associations, and full history;
+- archive/reopen cycles never lose child entities.
 
 ### Exit gate
 
-Restart Desktop and Host during a Task; reopen it and preserve hierarchy, history, workspace associations, and resumable upstream sessions where provider supports it.
+Tasks are fully durable aggregates manageable from both Desktop and CLI.
 
+## Phase 8.2 — Agent domain and run lifecycle
 
-### Mandatory vertical-slice checkpoint after Phase 8
+### Goal
 
-Before Phase 9, stop adding infrastructure and prove the smallest real Lazarus loop:
+Give every coding-agent session a durable Lazarus identity.
+
+### Build
+
+- Agent entity CRUD with Chat/Terminal interface type, provider/model binding, permission profile reference, worktree/run-location assignment;
+- parent/child lineage fields populated (`parent_agent_id`, `parent_artifact_id`) even though spawning comes in Phase 13;
+- AgentRun records per turn/run with usage capture and stop reasons;
+- run state machine per section 18.1 with event emission on every transition;
+- persisted upstream session id where the provider supports resume;
+- Agents panel tree UI showing hierarchy, provider/model icons, states, write/read badges;
+- interruption handling: unexpected Host death marks agents `INTERRUPTED` with explicit resume/restart actions only when the provider supports them.
+
+### Tests
+
+- kill the Host during an active agent run; after restart the agent shows honest interrupted state, not "running";
+- resume works for providers that support it and fresh-session fallback is used otherwise (full canonical context arrives in Phase 9).
+
+### Exit gate
+
+Agents are durable, observable entities whose lifecycle survives crashes honestly.
+
+## Phase 8.3 — Agent canvas surfaces
+
+### Goal
+
+Ship the two distinct agent surfaces on the shared tile canvas.
+
+### Build
+
+- Terminal Agent tile: coding-agent CLI launched under Lazarus inside a Phase 6 terminal, bound to a durable Agent identity, with session tracking and permissions applied;
+- Chat agent tile: streamed messages and tool activity via managed/structured adapters;
+- approvals and clarification cards rendered inline for chat agents;
+- queued messages and todo/progress stack display;
+- attachments and artifact/file/agent mentions in the composer;
+- composer controls: provider/model picker (Phase 7 component), permission profile selector, reasoning effort, run location (local/worktree), budget display, Send/Stop;
+- context inspector tile placeholder showing what will be sent upstream (fully realized in Phases 9/10);
+- unread/blocked indicators wired into the Agents panel.
+
+### Tests
+
+- both surface types remain distinct: a Terminal agent never claims structured tool-call visibility it lacks, a Chat agent never renders raw ANSI;
+- stopping a run mid-stream leaves consistent persisted state;
+- composer settings changes apply at next-turn boundaries without corrupting the current run.
+
+### Exit gate
+
+Users can launch both Chat and Terminal agents against a real repository through the canvas, control them via the composer, and observe them live.
+
+## Phase 8.4 — Mandatory vertical-slice checkpoint
+
+### Goal
+
+Stop adding infrastructure and prove the smallest real Lazarus loop end to end before building advanced context/index/orchestration features.
+
+### Scenario
 
 ```text
 open repo
@@ -3785,7 +4202,16 @@ open repo
  -> reopen Task and inspect the same evidence
 ```
 
-Use one real provider plus the fake provider. If this loop is unreliable, fix it before building advanced context/index/orchestration features.
+### Requirements
+
+- use one real provider plus the fake provider;
+- the loop must pass repeatedly, not once;
+- measure and record wall-clock time of each stage;
+- any flakiness found here is fixed before proceeding - this checkpoint gates Phase 9.
+
+### Exit gate
+
+The full loop passes reliably on all supported platforms using both a real and the fake provider. If this loop is unreliable, fix it before building advanced context/index/orchestration features.
 
 ---
 
@@ -3793,38 +4219,83 @@ Use one real provider plus the fake provider. If this loop is unreliable, fix it
 
 ### Goal
 
-Make context Lazarus-owned.
+Make context Lazarus-owned. Build the ledger first, then packaging/compaction, then checkpoint semantics with provider switching on top.
+
+## Phase 9.1 — Canonical message ledger
+
+### Goal
+
+Own a durable, provider-neutral record of every conversation.
 
 ### Build
 
-- canonical messages;
-- streaming message assembler;
-- tool-call event model;
-- attachment references;
-- provider transcript importer;
-- context package builder;
-- compaction;
-- provider switch;
-- usage ledger;
-- context budget UI;
-- canonical checkpoints;
-- fork;
-- product-level rewind;
-- replay without model invocation;
-- fallback to fresh provider sessions when native resume is unavailable.
+- `CanonicalMessage` storage: role, authored_by, parts (text/code/image/file/artifact/diff/terminal-excerpt/structured), citations, tool_calls, attachments, provenance, provider_metadata;
+- streaming message assembler converting provider deltas into finalized durable message boundaries (buffered streaming allowed, finalized boundaries always persisted);
+- tool-call event model mapped from each adapter class onto the canonical form;
+- provider transcript importer for backfilling sessions started before canonicalization;
+- usage ledger rows per run: tokens in/out/cached, reported vs estimated cost, duration, retries (section 29.1);
+- replay support: reconstruct visible conversation state from persisted events without invoking any model.
 
-Test scenario:
+### Tests
 
-1. start agent on Claude;
-2. discuss architecture;
-3. switch next turn to Codex;
-4. Codex receives canonical context;
-5. switch to API model;
-6. all visible user decisions remain intact.
+- kill the Host mid-stream; after restart the finalized messages are intact and only the partial tail is absent;
+- replay produces identical visible state across two runs;
+- imported transcripts round-trip through the canonical model without loss of user-visible decisions.
 
 ### Exit gate
 
-Provider switching does not require copy/paste and no core history is lost.
+Every conversation turn is durably recorded in Lazarus-owned canonical form regardless of provider.
+
+## Phase 9.2 — Context package builder and compaction
+
+### Goal
+
+Assemble provider-bound context packages from canonical state under explicit budgets.
+
+### Build
+
+- context package builder implementing the ten-step switch sequence (task brief, artifact goals, repo instructions, recent conversation, retrieved memory, code snippets with provenance, diff summary, unresolved findings, prior-run summary) sized to each provider's computed budget;
+- per-provider budget resolution including unknown-window conservative defaults;
+- context compaction at configurable thresholds (~60%/75%/90%): summarize low-value history, retain decisions verbatim, keep exact code/file references, preserve unresolved requirements, drop duplicated tool chatter, link back to full local history;
+- versioned, testable compaction output (summary revisions are records, not ephemera);
+- context budget UI: live token/cost consumption per agent, never hover-only.
+
+### Tests
+
+- switching providers mid-conversation delivers an equivalent decision-preserving package to each target within its budget;
+- forced-compaction scenarios retain every recorded decision verbatim;
+- budget UI matches actual packaged sizes.
+
+### Exit gate
+
+Provider switching does not require copy/paste because Lazarus rebuilds equivalent context for any target provider.
+
+## Phase 9.3 — Checkpoints, fork/resume/rewind, and switching UX
+
+### Goal
+
+Deliver product-level continuity operations distinct from provider-native session features.
+
+### Build
+
+- `Checkpoint` records per section 14.4: canonical cursor, artifact revision refs, workspace/commit/diff hash, context summary revision, unresolved findings, optional provider_session_ref as optimization only;
+- resume: continue from current canonical state, reusing provider session only when compatible;
+- fork: new Agent/AgentRun from a chosen checkpoint with independent future;
+- rewind: new future from an old checkpoint - historical events are never mutated;
+- retry: same workflow node attempt with explicit new attempt number;
+- fallback to fresh provider sessions when native resume is unavailable, rebuilt from the canonical context package;
+- checkpoint/fork controls surfaced in chat tiles;
+- scripted acceptance scenario: start on Claude -> discuss architecture -> switch next turn to Codex receiving canonical context -> switch to API model -> all visible user decisions intact.
+
+### Tests
+
+- rewind never rewrites event history; new branches reference old checkpoints;
+- forking at a checkpoint yields two agents with divergent futures and shared ancestry visible in the tree;
+- the scripted switching scenario passes against real adapters plus the fake provider.
+
+### Exit gate
+
+Provider switching requires no copy/paste, no core history is lost, and checkpoint/fork/rewind semantics are demonstrable from the UI.
 
 ---
 
@@ -3832,50 +4303,88 @@ Provider switching does not require copy/paste and no core history is lost.
 
 ### Goal
 
-Give agents high-quality, resource-bounded repository context.
+Give agents high-quality, resource-bounded repository context. Pipeline first, retrieval second, trust/inspector third, with evaluation throughout.
+
+## Phase 10.1 — Index pipeline
+
+### Goal
+
+Build an incremental, bounded indexing pipeline over real repositories.
 
 ### Build
 
-- file watcher queue;
-- ignore rules;
-- language detection;
-- Tree-sitter;
-- chunker;
-- symbol extraction;
-- BM25;
-- optional embeddings;
-- graph edges;
-- hybrid ranking;
-- retrieval API;
-- context preview;
-- provenance;
-- context trust classification;
-- outbound-context secret redaction;
-- provider/data-policy filtering;
-- context inspector with per-source removal.
+- file watcher queue feeding the pipeline from Phase 4.3 events with debounce and backpressure;
+- ignore rules (`.git`, dependencies, build outputs, binaries, large generated files, secrets, user-configured paths) shared with the file subsystem;
+- language detection and Tree-sitter parsing for priority languages;
+- chunker with language-aware boundaries;
+- symbol extraction into `symbol_nodes` and import/reference edges into `symbol_edges`;
+- incremental updates: edits touch only affected chunks/subgraphs, never full reindex;
+- resource controls: max CPU percent, memory ceiling, pause/resume commands, adaptive backpressure, battery awareness, pause during foreground compilation;
+- index state tracking per file (`file_index_state`) enabling crash-safe resume of interrupted indexing.
 
-Resource controls:
+### Tests
 
-- max CPU;
-- max memory;
-- pause/resume;
-- adaptive backpressure.
-
-### Evaluation set
-
-Create 100+ repo questions with known relevant files/symbols.
-
-Measure:
-
-- Recall@5;
-- Recall@10;
-- MRR;
-- indexing time;
-- memory.
+- kill the Host mid-index; restart resumes without corrupting or duplicating index state;
+- editing one file reindexes only that file's affected units within the latency target (<2s median);
+- a churning generated directory cannot exceed configured CPU/memory budgets.
 
 ### Exit gate
 
-Meet defined retrieval metrics without exceeding configured machine resource budget.
+Indexing is incremental, resumable, and strictly resource-bounded on large repos.
+
+## Phase 10.2 — Retrieval
+
+### Goal
+
+Answer "where is this in the codebase" with measurable quality.
+
+### Build
+
+- BM25 lexical index (Tantivy or SQLite FTS5 per stack decision);
+- graph proximity queries over the symbol graph ("what else is affected?");
+- hybrid ranking implementing the section 15.3 score with weights held in configuration, tuned by evaluation rather than intuition;
+- git-recency and task-mention signals;
+- retrieval API RPC returning ranked results each carrying full provenance (path, revision/hash, line range, method, score, timestamp);
+- context preview API showing exactly what would be assembled for a query - reused by the Phase 9 builder;
+- optional embeddings behind a feature flag using sqlite-vec or equivalent, never required for core function.
+
+### Evaluation set
+
+Create 100+ repo questions with known relevant files/symbols. Measure Recall@5, Recall@10, MRR, indexing time, and memory. Track regressions across changes.
+
+### Tests
+
+- eval suite runs in CI with fake-provider-independent deterministic retrieval;
+- removing any single ranking signal produces a measured delta (proves signals contribute);
+- provenance fields are complete for every returned chunk.
+
+### Exit gate
+
+Meet defined retrieval metrics (Recall/MRR targets) without exceeding the configured machine resource budget.
+
+## Phase 10.3 — Trust classification and context inspector
+
+### Goal
+
+Make outbound context inspectable, filterable, and secret-safe.
+
+### Build
+
+- trust-class assignment per section 15.6 on every indexed/retrieved item with explicit precedence ordering;
+- outbound-context secret redaction scanning before any provider packaging;
+- provider/data-policy filtering: denied files/chunks removed, size/token budget enforced, egress record noting which references left the machine;
+- Context inspector UI: every source listed with trust class and provenance, per-source removal before a sensitive run, egress visibility after;
+- integration point consumed by the Phase 9.2 package builder so no provider send path can bypass it.
+
+### Tests
+
+- planted secrets in repo content are redacted before any outbound package;
+- removing a source in the inspector demonstrably excludes it from the next run's package;
+- untrusted external content can influence answers but can never elevate permissions or override policy.
+
+### Exit gate
+
+Every byte leaving the machine passes through the classified, redacted, policy-filtered, user-inspectable path.
 
 ---
 
@@ -3883,32 +4392,84 @@ Meet defined retrieval metrics without exceeding configured machine resource bud
 
 ### Goal
 
-Move important intent out of transient chat.
+Move important intent out of transient chat. Core storage model first, then editing/rendering, then validation/conflict/export.
+
+## Phase 11.1 — Typed artifact core
+
+### Goal
+
+Give artifacts a durable, versioned, relational storage model.
 
 ### Build
 
-- typed artifact schemas;
-- TipTap/Markdown editing;
-- hierarchy;
-- revision history;
-- links;
-- comments model;
-- export/import;
-- versioned snapshots;
-- artifact mentions;
-- render Mermaid;
-- attach code refs.
+- typed artifact schemas for the wire-level built-ins: Spec, Ticket, Story, Review (ADR/plans/decision logs as Spec/Review templates, not new kinds - per parity contract);
+- artifact CRUD RPCs with parent/hierarchy support for Epic-style trees;
+- `ArtifactRevision` immutable snapshots with content hashes on every save;
+- `ArtifactRelation` graph: DEPENDS_ON / BLOCKS / IMPLEMENTS / VERIFIES / DERIVED_FROM;
+- optimistic concurrency via expected-revision checks on mutation;
+- status/assignee fields supporting board views later;
+- artifact mentions resolution (`@artifact-id`) validated against existing entities.
 
-Artifact validator:
+### Tests
 
-- required sections;
-- broken relations;
-- missing acceptance criteria;
-- circular ticket dependencies.
+- concurrent saves from two clients produce exactly one conflict, never silent last-write-wins;
+- revision history is append-only and hash-verifiable;
+- deleting a parent surfaces dependent children explicitly rather than cascading silently.
 
 ### Exit gate
 
-Create an Epic spec, split it into tickets, provoke a stale-revision save and resolve it through the explicit conflict view, export to Markdown, delete local UI cache, and reconstruct from persisted artifact state.
+Artifacts are durable versioned entities with typed relations persisted across any restart.
+
+## Phase 11.2 — Editing and rendering
+
+### Goal
+
+Make artifacts pleasant, structured, and rich without breaking their Markdown-first durability.
+
+### Build
+
+- TipTap or equivalent Markdown-first structured editor bound to the tile canvas;
+- section-aware editing honoring each built-in type's template sections;
+- Mermaid diagram rendering inside artifact previews;
+- code references attached to files/symbols/diffs via Phase 5/10 data;
+- comments model threaded per artifact;
+- live/streaming artifact updates: an agent writing an artifact streams into the editor view;
+- export to clean Markdown preserving structure and links.
+
+### Tests
+
+- round-trip: edit in structured editor -> export Markdown -> reimport -> semantically identical;
+- streaming writes render progressively without corrupting editor state;
+- Mermaid blocks with syntax errors degrade to source display with an error marker.
+
+### Exit gate
+
+Users and agents co-edit versioned artifacts with structured sections, diagrams, code refs, and comments.
+
+## Phase 11.3 — Validation, conflicts, export/import, traceability
+
+### Goal
+
+Make the artifact system trustworthy under concurrency, portable without Lazarus, and traceable end to end.
+
+### Build
+
+- artifact validator: required sections present, broken relations detected, missing acceptance criteria flagged, circular ticket dependencies rejected;
+- explicit conflict view for stale-revision saves showing both versions with merge assistance;
+- `.lazarus/artifacts/` export/import per section 16.2 with format versioning;
+- traceability chain queries per section 16.3 (requirement -> architecture -> ticket -> commit -> test -> verification) plus coverage-gap reporting;
+- reconstruct-from-persisted-state guarantee: delete local UI cache entirely and rebuild all views from Host data.
+
+### Tests
+
+- provoke a stale-revision save, resolve it through the conflict view, verify both intents are represented;
+- validator catches every seeded defect class;
+- full export -> wipe profile -> import restores hierarchy, revisions, relations, and comments;
+- cache-wipe reconstruction produces byte-identical rendered views.
+
+### Exit gate
+
+Create an Epic spec, split it into tickets, resolve a provoked conflict through the explicit view, export to Markdown, delete the UI cache, and reconstruct everything from persisted artifact state.
 
 ---
 
@@ -3916,44 +4477,81 @@ Create an Epic spec, split it into tickets, provoke a stale-revision save and re
 
 ### Goal
 
-Implement user-invoked planning skills/workflows on the shared Task surface.
+Implement user-invoked planning skills/workflows on the shared Task surface. Runtime first, seed content second, tools and evaluation third.
+
+## Phase 12.1 — Skill/workflow runtime on the Task surface
+
+### Goal
+
+Make versioned skills invocable, observable, and reproducible.
 
 ### Build
 
-Workflow definitions:
+- skill package format per section 21.3: `skill.yaml` manifest (id, version, trigger, context injection budget/position, permissions), `SKILL.md`, templates, scripts;
+- invocation plumbing on the Task surface: user-invoked via palette/slash commands plus auto-match triggers;
+- workspace-local skills under `.lazarus/skills/` loaded alongside shipped ones;
+- streaming artifact output: workflow runs write intermediate progress into live artifacts (Phase 11.2 streaming);
+- structured plan schema enforcement - plans are structured data with optional Markdown views, never free-form text only;
+- skill id/version recorded on every AgentRun so any result is reproducible;
+- prompt architecture integration per section 36 (structured inputs, versioned prompts, no hardcoded giant prompts).
 
-- Quick;
-- Plan;
-- Phases;
-- Epic requirement workflow.
+### Tests
 
-Seed skill packages:
-
-- epic brief;
-- technical plan;
-- ticket breakdown;
-- core flows;
-- artifact critique;
-- review;
-- changeset walkthrough;
-- decision capture.
-
-Planner tools:
-
-- repository search;
-- symbol graph;
-- file read;
-- git diff;
-- artifact read/write;
-- clarification questions.
-
-Add streaming artifacts and intermediate progress.
-
-Plan schema must be structured, not free-form only.
+- a deliberately weakened prompt version fails the eval dataset (proves evals guard quality);
+- every run records its exact prompt/prompt-version for reproduction;
+- a workspace-local skill overrides a shipped one only with explicit user visibility.
 
 ### Exit gate
 
-A large sample task yields requirements, impacted files, ordered steps, tests, risks, and traceability without manual prompt engineering, and the same eval dataset catches a deliberately weakened prompt.
+Skills are first-class versioned, streamed, recorded, reproducible units of behavior on the Task surface.
+
+## Phase 12.2 — Seed planning workflows
+
+### Goal
+
+Ship the 1.0 seed catalog with real instructions, output contracts, and evals.
+
+### Build
+
+- Quick workflow: query -> context -> compact plan -> single agent -> gates -> review; minimal artifact bureaucracy, small context budget;
+- Plan workflow producing problem statement, assumptions, impacted files/symbols, ordered steps, tests, risks, acceptance criteria, optional Mermaid diagrams;
+- Phases workflow implementing the DISCOVERY -> ... -> COMPLETE state machine with per-phase goal/dependencies/scope/plan/verification contract/output summary/commits/lessons;
+- Epic requirement workflow feeding the Phase 11 hierarchy;
+- seed skills: epic brief, technical plan, ticket breakdown, core flows, artifact critique, review, changeset walkthrough, decision capture;
+- each seed ships with an output contract schema and at least one eval case.
+
+### Tests
+
+- a large sample task yields requirements, impacted files, ordered steps, tests, risks, and traceability without manual prompt engineering;
+- Quick mode completes without creating artifacts unless requested;
+- Phases mode transitions emit events visible in the Task timeline.
+
+### Exit gate
+
+All four workflows plus the seed catalog produce contract-conforming outputs on benchmark tasks.
+
+## Phase 12.3 — Planner tools and evaluation
+
+### Goal
+
+Give planners grounded repo access and measure plan quality continuously.
+
+### Build
+
+- planner tool surface under permission policy: repository search (Phase 10 retrieval), symbol graph queries, file read, git diff read, artifact read/write, clarification-question cards;
+- role-specific context distribution per section 17.2 (Explorer/Architect/Test strategist/Skeptic/Planner synthesizer) - not everyone gets the whole repo;
+- plan quality checks per section 17.3 enforced pre-execution: requirement mapping, step targets or discovery instructions, valid ordering, migration mentions for schema changes, specific tests, rollback for risky ops, no invented files/APIs, cross-artifact conflict detection;
+- eval dataset per section 37.1 wired into CI: impacted-file precision/recall, requirement coverage, dependency ordering, hallucinated-symbol rate, plan executability.
+
+### Tests
+
+- planner citing nonexistent symbols/files is caught by hallucination metrics;
+- clarification flow asks only blocking/high-value questions on seeded ambiguous tasks;
+- quality checks block execution of a seeded bad plan with precise violation reports.
+
+### Exit gate
+
+The same eval dataset catches a deliberately weakened prompt and validates plan executability before any plan reaches an implementer.
 
 ---
 
@@ -3961,34 +4559,79 @@ A large sample task yields requirements, impacted files, ordered steps, tests, r
 
 ### Goal
 
-Real durable multi-agent coordination.
+Real durable multi-agent coordination. Mailbox/lineage core first, class-aware delivery semantics second, UI/CLI third.
+
+## Phase 13.1 — Spawn, lineage, and mailbox core
+
+### Goal
+
+Make agent relationships and messaging durable subsystem primitives.
 
 ### Build
 
-- child spawn RPC;
-- parent/child lineage;
-- mailbox;
-- messages;
-- request/reply;
-- read transcript permission;
-- role assignment;
-- agent selection policy;
-- task-scoped mentions;
-- UI unread state;
-- message inspector;
-- delivery mechanism tracking;
-- separate persisted/delivered/consumed/acknowledged states;
-- MCP/tool bridge for agents that support it;
-- no unsafe terminal text injection fallback.
+- child spawn RPC with `SpawnRequest` (purpose, role, desired capabilities, workspace scope, write access, budget, return contract);
+- router-side selection of provider/model/reasoning/isolation/worktree/context package per section 18.2;
+- parent/child lineage persisted and rendered in the Agents panel tree;
+- `AgentMessage` mailbox persistence: id, from/to, thread, kind (REQUEST/RESPONSE/FYI/REVIEW_REQUEST/BLOCKER/HANDOFF/CANCEL), body, attachment refs, requires_reply, timestamps;
+- delegation contracts enforced per section 18.4 so child agents cannot wander;
+- four distinct message states tracked: persisted / delivered / consumed / acknowledged - "persisted" never implies "consumed by the model";
+- scheduler awareness of dependency readiness, concurrency limits, collision risk, rate limits, budgets, and Host resources per section 18.5.
 
-CLI:
+### Tests
 
-```bash
-lazarus agent spawn
-lazarus agent send
-lazarus agent inbox
-lazarus agent transcript
-```
+- spawned children appear with correct lineage and cannot exceed their contract's write access or budget;
+- messages survive Host restarts intact in all four states;
+- a child exceeding its return contract is stopped and reported.
+
+### Exit gate
+
+Agents spawn children under contracts, exchange durable messages with distinct lifecycle states, and the hierarchy survives crashes.
+
+## Phase 13.2 — Delivery semantics by agent class
+
+### Goal
+
+Deliver mailboxes honestly according to what each provider can actually do.
+
+### Build
+
+- managed conversation agents: unread items injected into the next turn or exposed via a Lazarus inbox tool;
+- MCP/tool-capable agents: `lazarus.agent.inbox`, `lazarus.agent.send`, `lazarus.agent.spawn`, and transcript-reference tools exposed under policy;
+- interactive terminal agents without tool integration: persist messages but never inject arbitrary text into an active terminal; surface unread state in UI; deliver only through explicit user/Host-controlled next-turn mechanisms the provider supports;
+- human assignees: delivery via UI notifications;
+- read-transcript permission gating for agents inspecting other agents' transcripts;
+- delivery mechanism and acknowledgement evidence recorded on every message;
+- task-scoped mentions resolving to agents or humans.
+
+### Tests
+
+- a terminal-class agent provably receives no injected terminal text while its unread count is accurate;
+- MCP bridge tools respect permission policy on every call;
+- consumed-state transitions only occur when the model actually received content (verified via adapter evidence).
+
+### Exit gate
+
+Every message records its true delivery mechanism and acknowledgement evidence across all four recipient classes.
+
+## Phase 13.3 — A2A surfaces and CLI
+
+### Goal
+
+Make multi-agent coordination visible and controllable.
+
+### Build
+
+- unread indicators per agent in the Agents panel and tab badges;
+- message inspector tile: threads, states, delivery evidence, attachments;
+- reply/request flows initiated from the inspector;
+- transcript access views gated by read-transcript permissions;
+- CLI parity: `lazarus agent spawn/send/inbox/transcript` with structured JSON output;
+- acceptance scenario wired end to end: Architect spawns Explorer and Reviewer, receives both replies after a Host reconnect mid-conversation, hierarchy/provenance fully visible afterward.
+
+### Tests
+
+- the scripted acceptance scenario passes with a forced Host restart between send and reply;
+- CLI and Desktop observe identical mailbox state.
 
 ### Exit gate
 
@@ -4000,36 +4643,81 @@ Architect spawns Explorer and Reviewer, receives both replies after reconnect, a
 
 ### Goal
 
-Execute dependency graphs safely.
+Execute dependency graphs safely. Execution core first, scheduling policy second, graph UI third. Remains deferred until the supervised loops of Phases 8-13 are reliable.
+
+## Phase 14.1 — Graph execution core
+
+### Goal
+
+Run a persisted WorkflowGraph with durable per-node state.
 
 ### Build
 
-- DAG parser;
-- ready queue;
-- node leases;
-- concurrency controls;
-- file collision predictions;
-- provider rate limits;
-- Host resource limits;
-- retries with backoff;
-- cancellation propagation;
-- pause/resume;
-- checkpointing;
-- node evidence.
+- DAG parser/validator over `WorkflowDefinition.graph_json` (cycle detection, orphan nodes, invalid refs);
+- ready-queue execution driven by dependency resolution;
+- node leases preventing double-execution; attempts numbered explicitly for retries;
+- retries with backoff and per-node max-attempt policy;
+- cancellation propagating to child agents/processes;
+- pause/resume at node boundaries;
+- checkpointing between nodes so runs resume after Host restart;
+- `WorkflowNodeRun` evidence records (inputs, outputs, agent, attempt, status) per section 7 entity model.
 
-UI:
+### Tests
 
-- workflow graph;
-- node logs;
-- retry;
-- skip;
-- approve;
-- reassign;
-- expand node into child workflow.
+- kill the Host mid-DAG; on restart the run resumes from completed nodes without re-running them;
+- forced node failure retries per policy then halts downstream dependents in a blocked state;
+- cancellation kills all in-flight node work cleanly.
 
 ### Exit gate
 
-Run a DAG with parallel frontend/backend worktrees, force one node to fail, retry it, integrate both, and preserve exact execution history.
+A DAG executes to completion with resumable, evidenced, retry-safe node state.
+
+## Phase 14.2 — Scheduling policies
+
+### Goal
+
+Schedule parallel work safely against real constraints.
+
+### Build
+
+- file collision prediction feeding serialization decisions (built on Phase 5.3);
+- provider rate-limit awareness queuing instead of hammering;
+- Host resource limits (concurrency caps by class: read vs write agents);
+- token/cost budget hierarchy enforcement (project -> task -> node -> run);
+- user priority and policy-governed ordering;
+- human-approval gates as first-class node types that block downstream work.
+
+### Tests
+
+- two collision-predicted nodes serialize automatically under default policy;
+- budget exhaustion mid-run stops new nodes while finishing in-flight ones per configured semantics;
+- approval gate blocks and releases exactly as approved.
+
+### Exit gate
+
+Parallel frontend/backend worktree nodes execute within every configured constraint, with collisions serialized and approvals honored.
+
+## Phase 14.3 — Workflow graph UI
+
+### Goal
+
+Make execution inspectable down to reproduction.
+
+### Build
+
+- workflow graph tile: ready/running/passed/failed/blocked states, assigned agent, retry count, cost, dependencies, evidence badges;
+- click-to-inspect per node: full inputs, outputs, logs, agent link, prompt/pack versions - everything needed to reproduce it;
+- node actions: retry, skip, approve, reassign, expand into a child workflow;
+- live updates via subscription; historical runs replayable from evidence.
+
+### Tests
+
+- force one node to fail, retry it from the UI, integrate both branches, and verify exact execution history is preserved and replayable;
+- graph renders smoothly at 100+ nodes.
+
+### Exit gate
+
+Run a DAG with parallel frontend/backend worktrees, force one node to fail, retry it, integrate both, and preserve exact execution history viewable from the graph UI.
 
 ---
 
@@ -4037,35 +4725,81 @@ Run a DAG with parallel frontend/backend worktrees, force one node to fail, retr
 
 ### Goal
 
-Do not trust “done.”
+Do not trust "done." Contracts and deterministic gates first, independent review second, bounded repair third.
+
+## Phase 15.1 — Verification contracts and deterministic gates
+
+### Goal
+
+Make completion evidence-based and machine-checkable.
 
 ### Build
 
-- verification contract parser;
-- command runner;
-- test detector;
-- static analysis plugin interface;
-- coverage evidence;
-- review agents;
-- findings;
-- severity;
-- fix handoff;
-- re-verification;
-- evidence matrix.
+- verification contract parser for Ticket/phase YAML declarations (commands, required tests, acceptance criteria, security/reviewer flags per section 23.1);
+- command runner executing gates in the correct run location (worktree/container) with timeouts and output capture;
+- built-in deterministic checks: format, lint, typecheck, tests, `git diff --check`, secret scan, dependency-audit hooks;
+- test detector mapping changed files to impacted test suites;
+- coverage evidence capture where configured;
+- `VerificationRun` + evidence matrix persistence linking every gate to pass/fail output;
+- completion rule enforced by the engine per section 23.3: process success AND gates pass AND zero unresolved blockers AND criteria have evidence - an LLM's textual "done" is structurally insufficient.
 
-Built-in checks:
+### Tests
 
-- format;
-- lint;
-- typecheck;
-- tests;
-- `git diff --check`;
-- secret scan;
-- dependency audit hooks.
+- an intentionally broken implementation cannot be marked complete until the failing criterion has repair evidence;
+- a gate command that hangs is killed at timeout and recorded as failed, not pending forever;
+- evidence matrix rows are tamper-evident (hash-linked) so later review can trust them.
 
 ### Exit gate
 
-An intentionally broken implementation cannot be marked complete until the failing criterion has evidence of repair.
+Every workflow node's SUCCEEDED state is only reachable through the full evidenced completion rule.
+
+## Phase 15.2 — Independent AI review and findings
+
+### Goal
+
+Add requirement/spec-level judgment without losing reviewer independence.
+
+### Build
+
+- review agent pipeline stages: spec compliance review, regression-risk review, independent final reviewer per section 23.2;
+- independence enforcement per section 23.5: planner != implementer != final reviewer; different model family preferred for final critique; reviewers get requirements + diff before implementer self-justification;
+- `Finding` records: severity, category, file/line location, message, evidence, proposed_fix, status (Appendix A.4 lifecycle);
+- severity-ranked findings surfaced on the diff and task views;
+- fix handoff creating targeted repair work items from accepted findings.
+
+### Tests
+
+- seeded spec violations are caught by the compliance stage with located evidence;
+- the same model as implementer is rejected for final review when policy requires difference;
+- finding locations resolve to real code ranges.
+
+### Exit gate
+
+Independent review produces located, evidenced, severity-ranked findings that gate completion.
+
+## Phase 15.3 — Bounded repair loops
+
+### Goal
+
+Close the loop from failure to verified fix within explicit limits.
+
+### Build
+
+- repair flow per section 23.4: verify -> cluster findings -> repair agent -> targeted verification -> full required verification -> pass/fail;
+- clustering deduplicates related findings into single repair units;
+- targeted re-verification first, then full gates before any completion claim;
+- hard stop conditions: max iterations, elapsed time, token/cost budget - escalation to the user on exhaustion;
+- repair history preserved as attempts linked to original findings.
+
+### Tests
+
+- a repair that fixes one finding but breaks a gate triggers full re-verification and honest failure;
+- exhausting max repair loops escalates with complete context instead of looping silently;
+- repaired findings transition through FIXING -> FIXED -> VERIFIED with evidence at each step.
+
+### Exit gate
+
+An intentionally broken implementation cannot be marked complete until the failing criterion has evidence of repair, and all repair activity stays inside configured bounds.
 
 ---
 
@@ -4073,26 +4807,57 @@ An intentionally broken implementation cannot be marked complete until the faili
 
 ### Goal
 
-Production-grade code review.
+Production-grade code review on demand. Pipeline first, fix workflows and benchmarking second.
+
+## Phase 16.1 — Review pipeline
+
+### Goal
+
+Run the full review pipeline over any selectable change set.
 
 ### Build
 
-- select diff source;
-- semantic scope;
-- correctness reviewer;
-- security reviewer;
-- performance reviewer;
-- spec compliance;
-- finding dedupe;
-- false-positive feedback;
-- fix selected;
-- fix all;
-- re-review changed hunks only;
-- full final review.
+- diff source selection: current branch vs base, uncommitted changes, commit range, PR, or selected files;
+- semantic scope computation (impacted files/symbols via Phase 10 graph);
+- reviewer stages from section 3.5: structural diff scan, dependency/symbol impact, tests/static analysis, correctness reviewer, security reviewer when relevant, performance reviewer when relevant, spec/acceptance compliance;
+- finding dedupe across reviewers/stages;
+- false-positive feedback loop feeding reviewer prompt/policy improvements;
+- severity-ranked findings with evidence and location for every item;
+- review outputs persisted as versioned Review artifacts.
+
+### Tests
+
+- each input mode produces correct scope on seeded repos;
+- duplicate findings across reviewers collapse to one entry with all evidence merged;
+- security/performance stages activate only when relevance heuristics fire.
 
 ### Exit gate
 
-Review a seeded benchmark of known bugs; track precision/recall and regression over model/prompt changes.
+Every review input mode runs the full pipeline producing deduplicated, evidenced, ranked findings stored as durable Reviews.
+
+## Phase 16.2 — Fix workflows and review benchmark
+
+### Goal
+
+Turn findings into verified fixes and measure review quality over time.
+
+### Build
+
+- fix selected / fix all actions creating bounded repair tasks (Phase 15.3 semantics);
+- re-review of changed hunks only after fixes, then full final review before closure;
+- automated-fix-task generation as optional pipeline output per section 3.5;
+- seeded benchmark of known bugs (null bugs, auth bypass, SQL injection, race, incorrect migration, missing tests, performance regression) per section 37.3;
+- precision/recall/severity-accuracy tracking with regression gates across model/prompt changes wired into the eval suite.
+
+### Tests
+
+- fixing one finding triggers hunk-scoped re-review without a full re-run;
+- benchmark metrics are produced automatically in CI and catch an intentionally degraded reviewer config;
+- "fix all" respects budget/iteration limits instead of looping.
+
+### Exit gate
+
+Review a seeded benchmark of known bugs; track precision/recall and regression over model/prompt changes, with fix workflows closing the loop through re-review.
 
 ---
 
@@ -4100,39 +4865,50 @@ Review a seeded benchmark of known bugs; track precision/recall and regression o
 
 ### Goal
 
-Controlled autonomous project execution.
+Controlled autonomous project execution built on top of the Phase 14 DAG engine, 15 verification engine, and 16 review pipeline. Deferred until supervised workflows are reliable.
+
+## Phase 17.1 — Task-to-DAG compilation
+
+### Goal
+
+Compile an approved plan into a governed executable graph.
 
 ### Build
 
-- complexity classifier;
-- dynamic DAG generation;
-- role templates;
-- agent router;
-- budgets;
-- permission policies;
-- repair loops;
-- human approval nodes;
-- stop conditions;
-- escalation.
+- complexity classifier choosing Quick/Plan/Phases/Epic compilation targets;
+- dynamic DAG generation from structured plans (Phase 12 schemas) with role templates per section 43;
+- agent router integration scoring providers per section 19 with fallback rules;
+- budget assignment across the hierarchy (project -> task -> node -> run);
+- permission policy generation per node from role + isolation requirements.
 
-Presets:
+### Tests
 
-- Conservative;
-- Balanced;
-- Autonomous.
+- identical plans compile to identical graphs deterministically;
+- router substitutions during execution are always visible to the user per section 19.3 - never silent.
 
-Conservative:
+### Exit gate
 
-- approval before write;
-- approval before shell network;
-- approval before integration.
+A structured plan compiles into a complete governed DAG without manual graph editing.
 
-Autonomous:
+## Phase 17.2 — Guardrails and presets
 
-- worktree/container;
-- bounded permissions;
-- no force push;
-- no prod deployment by default.
+### Goal
+
+Make autonomy bounded, inspectable, and interruptible everywhere.
+
+### Build
+
+- human-approval nodes wired as first-class gates (Phase 14.2);
+- hard controls per section 3.6 enforced by the scheduler: max agents, max concurrent agents, max runtime, max tool calls, max token/currency budget, max repair loops, allowed providers/models, allowed directories, network policy, shell command policy, PR/merge policy;
+- stop conditions and escalation paths at every bound;
+- presets: Conservative (approval before write/shell-network/integration), Balanced, Autonomous (worktree/container required, bounded permissions, no force push, no prod deployment by default);
+- full inspectability: users can see why work is running, blocked, retried, or complete at all times.
+
+### Tests
+
+- each hard control halts execution when violated in fault-injection tests;
+- preset switching mid-run is rejected or applied only at safe boundaries;
+- Conservative preset provably requires approval for every write/network action on a seeded run.
 
 ### Exit gate
 
@@ -4144,29 +4920,58 @@ Autopilot completes a multi-component benchmark task with deterministic evidence
 
 ### Goal
 
-Connect local Lazarus Tasks to real engineering systems without a Lazarus backend.
+Connect local Lazarus Tasks to real engineering systems without a Lazarus backend. GitHub first as the reference contract, then the same contract for GitLab/Linear/Jira.
+
+## Phase 18.1 — GitHub integration
+
+### Goal
+
+Full local issue -> branch -> PR workflow against GitHub.
 
 ### Build
 
-GitHub:
+- credential discovery through documented methods only: `gh` session reuse where safe, OAuth device/browser flow with PKCE and local callback, or fine-grained PAT stored in OS keychain;
+- issue import mapping into local artifacts with field-level fidelity and back-links;
+- PR/diff metadata import; repository/branch/commit reads;
+- create/update PR with auto-generated body per section 40 (goal, requirements, implementation summary, testing evidence, risks, Task link);
+- review comment posting; check/CI status fetch on demand;
+- push only behind explicit permission (`git.push` capability); no public webhook endpoint - explicit refresh/polling/on-demand fetch exclusively;
+- Task <-> issue/PR links stored bidirectionally on both entities;
+- integration payloads normalized into local domain objects, never stored raw as canonical truth (section 25.5).
 
-- `gh`/OAuth/PAT credential discovery;
-- keychain storage;
-- issue import;
-- PR import;
-- create/update PR;
-- review comments;
-- check/CI status fetch;
-- explicit push permission;
-- Task ↔ issue/PR links.
+### Tests
 
-Then add GitLab, Linear, and Jira through the same local integration contract.
-
-Do not build public webhooks for the local release. Use explicit refresh/polling/on-demand fetch.
+- auth expiry surfaces a typed `INTEGRATION_AUTH_EXPIRED` error with re-auth flow;
+- push without explicit permission is impossible at the permission-engine level;
+- offline operation degrades gracefully: local work continues, remote operations queue for explicit refresh.
 
 ### Exit gate
 
-GitHub issue → local Lazarus Plan/Epic → agent execution → verification → local commit/branch → explicit push → PR creation → Task stores the resulting references.
+GitHub issue -> local Lazarus Plan/Epic -> agent execution -> verification -> local commit/branch -> explicit push -> PR creation -> Task stores the resulting references, all without any Lazarus backend.
+
+## Phase 18.2 — GitLab, Linear, and Jira via the shared contract
+
+### Goal
+
+Prove the integration contract generalizes beyond GitHub.
+
+### Build
+
+- extract the Phase 18.1 patterns into a versioned local integration contract (auth methods, import/export verbs, linking model, refresh semantics);
+- GitLab: local OAuth/PAT/keychain, issue/MR import, MR create/update, comments, CI status retrieval;
+- Linear and Jira: user-authorized token/OAuth, issue import, optional create/update, Lazarus artifact/PR references attached;
+- per-integration read/write capabilities, audited writes, visible outbound domains, disable-without-breaking-local-Tasks guarantee;
+- IDE deep-link groundwork (`lazarus://task/<id>`) reserved for section 25.4 later work.
+
+### Tests
+
+- the same acceptance scenario passes against GitLab substituting MR for PR;
+- disabling all integrations leaves every local Task fully functional;
+- each integration's outbound network destinations are enumerable and visible.
+
+### Exit gate
+
+At least two additional integrations run through the shared contract with no GitHub-specific code outside its own pack.
 
 ---
 
@@ -4174,28 +4979,57 @@ GitHub issue → local Lazarus Plan/Epic → agent execution → verification �
 
 ### Goal
 
-Add providers, tools, skills, and workflows without modifying Lazarus core.
+Add providers, tools, skills, and workflows without modifying Lazarus core. Package contracts first, local install/trust machinery second.
+
+## Phase 19.1 — Package contracts
+
+### Goal
+
+Define versioned manifests that third parties can target.
 
 ### Build
 
-- provider pack manifest;
-- tool plugin manifest;
-- workflow packages;
-- skill packages;
-- MCP server management;
-- package signatures;
-- permission declarations;
-- compatibility/API version;
-- local install/update/remove;
-- local trust prompt;
-- per-plugin capability inspector;
-- workspace/global enablement.
+- provider pack manifest per Appendix I (pack API version, identity, binary/API discovery, compatibility range, capabilities, auth methods, model discovery, invocation modes, resume/cancellation behavior, usage extraction, parsers, terminal mode, MCP bridge, env vars, secret scopes, network destinations, golden fixtures);
+- tool plugin manifest (schemas, side-effect level declarations, capability requirements per section 21.1);
+- workflow packages and skill packages reusing the Phase 12 formats with published SDKs (`provider-sdk`, `workflow-sdk`, `artifact-sdk`);
+- package signatures and permission declarations required at manifest level;
+- compatibility/API version negotiation so packs declare their supported core ranges;
+- rule enforced structurally: a provider pack cannot grant itself permissions - core policy remains authoritative.
 
-Do not build a hosted marketplace now. A package format and local installer are sufficient.
+### Tests
+
+- a malformed or unsigned package is rejected with precise diagnostics before any capability evaluation;
+- declared permissions exceeding allowed maximums fail validation;
+- SDK-generated example pack installs against the current core without modification.
 
 ### Exit gate
 
-A third-party developer can add a CLI provider and custom workflow using documented SDKs without changing Lazarus core.
+A third-party developer can author all four package types using documented SDKs and manifests validated entirely by tooling.
+
+## Phase 19.2 — Local install, trust, and management
+
+### Goal
+
+Install and govern extensions locally with no hosted marketplace.
+
+### Build
+
+- local install/update/remove flows from directories/archives with signature verification and Zip-Slip-safe extraction;
+- local trust prompt on first install showing declared capabilities, secret scopes, and network destinations in plain language;
+- per-plugin capability inspector view; runtime enforcement of every declaration by the permission engine;
+- workspace vs global enablement scoping;
+- plugin packages treated as untrusted until verified (section 31.6);
+- update flow with version/compatibility checks and rollback to prior pack versions.
+
+### Tests
+
+- an installed plugin requesting undeclared filesystem access is denied at enforcement and audited;
+- removing a plugin leaves no orphaned capabilities or scheduled jobs;
+- downgrade of a pack triggers re-validation against recorded fixtures.
+
+### Exit gate
+
+A third-party developer can add a CLI provider and custom workflow using documented SDKs without changing Lazarus core, with every capability they declare visible, enforced, and revocable.
 
 ---
 
@@ -4203,31 +5037,78 @@ A third-party developer can add a CLI provider and custom workflow using documen
 
 ### Goal
 
-Make local autonomous execution safe enough for serious daily use.
+Make local autonomous execution safe enough for serious daily use. Model completion first, secrets/egress second, adversarial validation third. Explicitly excludes SSO, SCIM, org policy, centralized device management, E2EE sync, and self-hosted cloud.
+
+## Phase 20.1 — Threat model completion and policy controls
+
+### Goal
+
+Close every gap between the Phase 0 threat-model skeleton and implemented controls.
 
 ### Build
 
-- complete local threat model;
-- dependency/supply-chain review;
-- provider/tool/plugin trust model;
-- provider allowlists;
-- tool allowlists;
-- shell command policy;
-- filesystem capability policy;
-- secrets broker;
-- secret + egress combination policy;
-- prompt-injection adversarial suite;
-- container escape/path/symlink tests;
-- deep-link/OAuth callback hardening;
-- loopback Origin protection;
-- archive extraction hardening;
-- plugin signature enforcement;
-- audit export;
-- local retention settings;
-- signed policy profiles;
-- updater/signature attack tests.
+- complete local threat model covering all eight threat classes in section 31.1 with mapped controls and residual-risk notes;
+- dependency/supply-chain review: SBOM generation, scanning, SLSA-style provenance on Lazarus's own builds;
+- provider/tool/plugin trust model finalized with allowlists for providers and tools;
+- shell command classification policy per section 22.3 with approval requirements for destructive/escalation classes;
+- filesystem capability policy with path allowlists and symlink escape prevention verified end to end;
+- signed policy profiles so a user or admin can pin security-relevant settings;
+- audit export in an open format covering all capability decisions and side effects.
 
-Do not implement SSO, SCIM, organization policy, centralized device management, E2EE sync, or self-hosted cloud in this phase.
+### Tests
+
+- every threat-model row links to at least one executable test;
+- policy profile tampering is detected and rejected at load.
+
+### Exit gate
+
+The threat model is fully mapped to implemented, tested controls with no unmitigated critical/high rows.
+
+## Phase 20.2 — Secrets broker and egress combination policy
+
+### Goal
+
+Make secret handling combination-aware rather than capability-by-capability.
+
+### Build
+
+- secrets broker completed per section 22.4: scope request -> permission check -> keychain load -> targeted injection -> log redaction -> audit event;
+- secret + egress combination policy per section 31.4 including high-risk combinations denied by default;
+- operation-scoped credentials preferred over raw-secret exposure (e.g., GitHub `create_pr` without handing over a long-lived token);
+- network policy tiers: deny-all / provider-endpoints-only / explicit-domain-list / integration-proxy / unrestricted-in-trusted-profiles;
+- container DNS/HTTP egress controls preventing trivial alternate-destination bypass where feasible;
+- separation guarantee: no single agent run combines secret access with unrestricted egress under default profiles.
+
+### Tests
+
+- fault injection proves denied combinations cannot be reached through any tool/MCP chain;
+- redaction verified across logs, transcripts, diagnostic bundles, and error messages;
+- proxy-scoped credential operations never expose the underlying token to model context.
+
+### Exit gate
+
+Dangerous combinations are denied by default and proven denied at actual enforcement boundaries.
+
+## Phase 20.3 — Injection defense and hardening validation
+
+### Goal
+
+Validate architectural containment against adversarial input and attack surfaces.
+
+### Build
+
+- prompt-injection defense per section 31.5 fully wired: provenance labeling, policy outside retrievable text, capability grants only via permission engine, high-risk transition surfacing, automatic-fetch limits;
+- adversarial fixture suite: hostile README, issue-comment secret disclosure, MCP-result tool instructions, generated code probing the keychain, install scripts attempting unexpected network;
+- renderer/deep-link/local-server hardening per section 31.6: strict CSP, navigation denial, deep-link payload validation, PKCE/state/nonce OAuth callbacks, Markdown/HTML/Mermaid sanitization, DNS-rebinding protection, archive hardening;
+- updater/signature attack tests: forged manifests, checksum mismatches, downgrade attacks, yanked-release rejection;
+- container escape/path/symlink test battery aligned with section 32.9;
+- local retention settings for audit/log data.
+
+### Tests
+
+- every adversarial fixture passes: no fixture achieves capability escalation, secret disclosure, or policy override;
+- signature attack suite fails closed on every vector;
+- sandbox boundary tests prove denied OS/container capabilities are actually denied.
 
 ### Exit gate
 
@@ -4239,42 +5120,85 @@ No known critical/high local execution security issue blocks release; denied cap
 
 ### Goal
 
-Make the complete local feature set production quality.
+Make the complete local feature set production quality. Scale testing first, failure-mode hardening second, storage lifecycle third - each publishing measurable budgets.
+
+## Phase 21.1 — Scale and stress validation
+
+### Goal
+
+Prove the feature set holds at aggressive local scale.
 
 ### Work
 
-- 100k-file repositories;
-- multi-GB repos;
-- 1M local agent events;
-- 20+ concurrent read agents where resources allow;
-- 5–10 local write agents where resources allow;
-- huge terminal streams;
-- provider outages;
-- offline mode/provider unavailability;
-- low disk space;
-- rate limits;
-- database corruption recovery;
-- power-loss tests;
-- Windows path edge cases;
-- Unicode;
-- long paths;
-- symlinks;
-- submodules;
-- monorepos;
-- disk quotas;
-- low-disk backpressure;
-- worktree garbage collection;
-- index/cache garbage collection;
-- terminal/event-log retention;
-- backup pruning;
-- stale update/download cleanup;
-- container/image cleanup;
-- SQLite WAL checkpoint/compaction;
-- startup/recovery profiling.
+- benchmark fixtures: 100k-file repositories; multi-GB repos; 1M local agent events; huge terminal streams;
+- concurrency targets: 20+ concurrent read agents and 5-10 local write agents where resources allow;
+- measure against section 47 budgets: Desktop idle RAM < 250 MB, input response < 100 ms, 50k-event virtualized chat, Task open < 500 ms; Host idle RAM < 150 MB, health < 50 ms, file-change-to-index median < 2 s, crash recovery < 5 s;
+- UI scroll/query latency profiling on the heaviest panels (chat history, event log, diff views);
+- startup/recovery profiling with regression tracking.
+
+### Tests
+
+- every budget runs in nightly benchmarks per platform class, not just locally;
+- regressions beyond declared thresholds fail the nightly job;
+- results published as tracked artifacts so trends are visible across releases.
 
 ### Exit gate
 
-Publish local performance/resource budgets and pass them in CI/nightly benchmarks on Windows, macOS, and Linux representative machines.
+Performance/resource budgets are published and passing at scale on all three platforms.
+
+## Phase 21.2 — Failure-mode hardening
+
+### Goal
+
+Survive hostile operational conditions gracefully.
+
+### Work
+
+- provider outages and rate-limit storms: queueing, backoff, honest degraded states;
+- offline mode/provider unavailability: full local work continuity, explicit remote-pending states;
+- low disk space: warn-then-stop-starting-write-heavy-jobs behavior per Appendix H;
+- database corruption recovery: integrity checks, backup restore path, WAL inspection;
+- power-loss tests: transactional durability of finalized boundaries verified after hard power cuts;
+- platform edge cases: Windows path limits/UNC/reserved names, Unicode paths, symlinks, submodules, monorepo layouts;
+- chaos coverage per section 32.5 extended to the full feature set: kill Desktop/Host/provider child/internet mid-operation for every major subsystem.
+
+### Tests
+
+- each failure mode has an automated test asserting observable recovery, not just absence-of-crash;
+- interrupted operations never leave silently corrupted or half-applied state;
+- error surfaces use stable taxonomy codes from section 38.
+
+### Exit gate
+
+Every seeded failure mode recovers cleanly with honest user-visible state on all platforms.
+
+## Phase 21.3 — Storage lifecycle, quotas, and garbage collection
+
+### Goal
+
+Bound every category of local data growth.
+
+### Work
+
+- disk usage tracking by category per Appendix H (SQLite/WAL, events, spools, indexes, caches, worktrees, containers, downloads, backups, plugins, diagnostics) surfaced via a storage inspector;
+- worktree garbage collection under documented rules that never auto-delete unmerged work;
+- index/cache GC with rebuild-from-source guarantees;
+- terminal/event-log retention policies with audit-critical state preserved;
+- backup pruning with restore-tested retention;
+- stale download/update cleanup, container/image cleanup;
+- SQLite WAL checkpointing/compaction scheduling;
+- `lazarus storage inspect/prune/doctor` CLI parity;
+- quota thresholds wired to Phase 21.2 low-disk behavior.
+
+### Tests
+
+- synthetic long-running simulations prove every category converges below its cap;
+- prune operations are dry-runnable (`--dry-run`) and respect unmerged-work protection;
+- restore from a pruned-backup-set still passes integrity verification.
+
+### Exit gate
+
+Storage is bounded, inspectable, and self-maintaining without ever endangering unmerged user work.
 
 ---
 
@@ -4282,55 +5206,92 @@ Publish local performance/resource budgets and pass them in CI/nightly benchmark
 
 ### Goal
 
-Ship a local product users can install, trust, recover, and operate.
+Ship a local product users can install, trust, recover, and operate. Packaging first, documentation second, release operations and acceptance third.
+
+## Phase 22.1 — Packaging and signing
+
+### Goal
+
+Produce signed, reproducible, platform-correct distribution artifacts.
 
 ### Build
 
-Installers:
+- Windows installer: `.msi` plus signed `.exe` with code-signing certificates wired into CI;
+- macOS: `.dmg` with developer-ID signing and notarization stapled;
+- Linux: `.deb`, `.rpm`, AppImage as supported;
+- reproducible clean builds from tags; SBOM generation; checksums; signed release manifests per section 33.2/33.3;
+- update feed publication with canary/beta/stable channels and staged rollout;
+- bundled CLI inside every desktop package so Desktop delegates Host lifecycle to it (never a second updater);
+- retained rollback sets shipped alongside each release.
 
-- Windows `.msi` / signed `.exe`;
-- macOS `.dmg` with signing/notarization;
-- Linux `.deb`, `.rpm`, AppImage as supported.
+### Tests
 
-Documentation:
-
-- installation;
-- quickstart;
-- architecture;
-- Tasks;
-- agents;
-- artifacts;
-- worktrees;
-- containers;
-- providers;
-- permissions;
-- context inspector;
-- verification;
-- integrations;
-- CLI;
-- troubleshooting;
-- privacy/data egress;
-- backup/restore/export;
-- plugin/provider SDK;
-- upgrade/rollback.
-
-Operations:
-
-- diagnostic bundle;
-- crash report generation;
-- local log viewer;
-- `lazarus doctor`;
-- Desktop/Host/CLI compatibility matrix;
-- migration/rollback runbook;
-- clean-machine install tests;
-- upgrade-from-N-1 tests;
-- provider compatibility registry;
-- artifact/export-format documentation;
-- release SBOM/signatures/provenance.
+- every artifact verifies: signature, checksum, manifest hash chain;
+- the update feed serves N-1 -> N upgrades for all three platforms;
+- a tampered artifact fails installation closed.
 
 ### Exit gate
 
-Install signed packages on clean Windows/macOS/Linux systems; complete the final local acceptance scenario; restart/upgrade/rollback; recover state; export/restore Tasks; and pass release/security/performance gates.
+Signed installers for all platforms build reproducibly in CI, verify correctly, and publish through channels with rollback sets retained.
+
+## Phase 22.2 — Documentation set
+
+### Goal
+
+Complete user, developer, security, and SDK documentation.
+
+### Deliverables
+
+- user docs: installation, quickstart, Tasks, agents, artifacts, worktrees, containers, providers, permissions, context inspector, verification, integrations, CLI reference, troubleshooting;
+- privacy/data-egress documentation matching section 46 exactly (what leaves the machine and when);
+- backup/restore/export guides tested against actual behavior;
+- upgrade/rollback runbook including interrupted-update recovery;
+- developer docs: architecture overview, ADR index (section 57 list complete), protocol guide, monorepo/contribution guide, build-from-source;
+- SDK docs: provider-pack contract (Appendix I), skill/workflow packages, tool plugins;
+- security docs: threat model summary, permission model, isolation matrix with honest enforcement labels;
+- artifact/export-format specifications versioned and published.
+
+### Tests
+
+- every documented command/flow executed verbatim against a clean machine as part of release QA;
+- doc examples covered by the test suite where mechanically checkable.
+
+### Exit gate
+
+A new user can go from download to completed verified Task using only the documentation; a new contributor can build and extend Lazarus from the developer docs.
+
+## Phase 22.3 — Release operations and final acceptance
+
+### Goal
+
+Operate the release honestly and prove 1.0 end to end.
+
+### Build
+
+- diagnostic bundle generation (logs + config + sanitized state, secrets redacted);
+- crash report generation locally, shared only by explicit user action;
+- local log viewer panel;
+- `lazarus doctor` covering DB integrity, Host health, provider probes, storage, config validation;
+- Desktop/Host/CLI compatibility matrix published per release;
+- provider compatibility registry published with tested versions;
+- clean-machine install tests on Windows/macOS/Linux matrix machines;
+- upgrade-from-N-1 and rollback tests including interrupted migration cases (section 32.7).
+
+### Acceptance scenario
+
+Run the full section 58 acceptance scenario on signed packages:
+
+1. clean install -> open large monorepo -> import GitHub issue;
+2. plan -> parallel agents in worktrees -> mailbox coordination -> verification -> repair -> evidence matrix complete;
+3. restart `hostd` mid-run and confirm recovery with honest interrupted states;
+4. review attributed diffs, merge/cherry-pick or push/PR explicitly;
+5. close and reopen later - full Task/artifacts/history/evidence/Git state intact;
+6. export Task bundle -> restore into a clean profile -> integrity verified;
+7. upgrade to next nightly -> roll back -> confirm state preserved both ways.
+
+### Exit gate
+
+Install signed packages on clean systems, complete the final local acceptance scenario, restart/upgrade/rollback while recovering state, export/restore Tasks, and pass all release/security/performance gates. This closes local 1.0.
 
 
 # 35. Suggested Build Order Inside Each Feature
