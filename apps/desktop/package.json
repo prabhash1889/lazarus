@@ -5,16 +5,28 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
+    "@radix-ui/react-dialog": "^1.1.23",
+    "@radix-ui/react-slot": "^1.3.3",
+    "@tanstack/react-query": "^5.102.3",
+    "@tanstack/react-router": "^1.170.32",
     "react": "19.2.8",
-    "react-dom": "19.2.8"
+    "react-dom": "19.2.8",
+    "zustand": "^5.0.15"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4",
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.6",
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.4",
     "@vitejs/plugin-react": "6.1.0",
-    "vite": "8.2.2"
+    "jsdom": "^30.0.1",
+    "vite": "8.2.2",
+    "vitest": "^4.1.11"
   }
 }

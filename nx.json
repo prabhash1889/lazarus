@@ -16,6 +16,9 @@
     "typecheck": {
       "cache": true
     },
+    "test": {
+      "cache": true
+    },
     "lint": {
       "cache": true
     }
