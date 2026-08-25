@@ -3,6 +3,7 @@
 //! workspaces, tasks) shared by the binary and integration tests.
 
 mod events;
+pub mod ipc;
 pub mod logging;
 pub mod persistence;
 pub mod runtime;
@@ -131,7 +132,7 @@ impl HostState {
         let _ = self.shutdown.send(());
     }
 
-    pub(crate) fn subscribe_shutdown(&self) -> broadcast::Receiver<()> {
+    pub fn subscribe_shutdown(&self) -> broadcast::Receiver<()> {
         self.shutdown.subscribe()
     }
 

@@ -18,6 +18,14 @@ rust-version = "1.96"
 anyhow = "1"
 axum = "0.8"
 fs2 = "0.4"
+hyper = { version = "1", default-features = false, features = ["http1", "server"] }
+# Local-IPC serving (named pipe / Unix socket) reuses hyper's HTTP/1 server
+# over arbitrary tokio streams; the desktop bridge uses the client side.
+hyper-util = { version = "0.1", default-features = false, features = [
+    "server-auto",
+    "service",
+    "tokio",
+] }
 rusqlite = { version = "0.37", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -2,6 +2,7 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, anyhow};
+use lazarus_hostd::ipc;
 use lazarus_hostd::logging::init_structured_logging;
 use lazarus_hostd::persistence::Store;
 use lazarus_hostd::runtime::{CrashMarker, DataPaths, InstanceLock};
@@ -86,6 +87,17 @@ async fn main() -> Result<()> {
     let listener = tokio::net::TcpListener::bind(listen_addr)
         .await
         .with_context(|| format!("binding {listen_addr}"))?;
+
+    // Bind the Desktop's local IPC endpoint before publishing its discovery
+    // record, so a visible record always names an accepting listener. The
+    // instance lock is held, so any leftover socket file is crash debris.
+    let ipc_endpoint = ipc::resolve_endpoint(&paths).map_err(|reason| anyhow!("{reason}"))?;
+    ipc::IpcListener::remove_stale_socket(&ipc_endpoint);
+    let ipc_listener = ipc::IpcListener::bind(&ipc_endpoint)
+        .with_context(|| format!("binding the local IPC endpoint {ipc_endpoint}"))?;
+    ipc::publish_endpoint_record(&paths, &ipc_endpoint)
+        .context("publishing the local IPC endpoint record")?;
+
     store
         .lock()
         .map_err(|_| anyhow!("Host persistence lock is poisoned"))?
@@ -96,9 +108,17 @@ async fn main() -> Result<()> {
         listen_addr = %listen_addr
     );
 
+    tokio::spawn(ipc::serve_ipc(
+        ipc_listener,
+        app.clone(),
+        state.subscribe_shutdown(),
+    ));
+
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal(state))
         .await?;
+
+    ipc::retire_endpoint_record(&paths);
 
     supervisor
         .shutdown()

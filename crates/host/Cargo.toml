@@ -14,6 +14,10 @@ base64 = "0.22"
 # Stream trait for the SSE subscription (already in the tree via axum).
 futures-core = "0.3"
 fs2.workspace = true
+hyper.workspace = true
+# Serves the authenticated surface over named pipes / Unix sockets by
+# driving hyper's HTTP/1 server over the accepted local streams.
+hyper-util.workspace = true
 protocol-rs = { path = "../protocol-rs" }
 process-supervisor = { path = "../process-supervisor" }
 rusqlite.workspace = true
