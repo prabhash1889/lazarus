@@ -4,6 +4,9 @@ declare global {
       core: {
         invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T>;
       };
+      event: {
+        listen<T>(event: string, handler: (event: { payload: T }) => void): Promise<() => void>;
+      };
     };
   }
 }
