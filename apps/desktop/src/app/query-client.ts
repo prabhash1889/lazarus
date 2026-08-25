@@ -1,7 +1,17 @@
-import { QueryClient } from '@tanstack/react-query';
+import { QueryCache, QueryClient } from '@tanstack/react-query';
+import { pushToast } from '../state/toast-store';
 
 export function createAppQueryClient(): QueryClient {
   return new QueryClient({
+    queryCache: new QueryCache({
+      onError: (error, query) => {
+        pushToast({
+          kind: 'error',
+          title: 'Request failed',
+          detail: `${query.queryKey.join('.')}: ${error instanceof Error ? error.message : String(error)}`,
+        });
+      },
+    }),
     defaultOptions: {
       queries: {
         retry: 2,

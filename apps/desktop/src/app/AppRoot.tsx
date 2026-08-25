@@ -3,6 +3,7 @@ import { RouterProvider } from '@tanstack/react-router';
 import { type ReactNode } from 'react';
 import { ErrorBoundary } from '../components/ErrorBoundary';
 import { RouteErrorFallback } from '../components/RouteErrorFallback';
+import { ToastViewport } from '../components/Toasts';
 import { ThemeProvider } from '../theme/ThemeProvider';
 import { createAppQueryClient } from './query-client';
 import { router } from './router';
@@ -18,6 +19,7 @@ export function AppRoot(): ReactNode {
         >
           <RouterProvider router={router} />
         </ErrorBoundary>
+        <ToastViewport />
       </QueryClientProvider>
     </ThemeProvider>
   );
