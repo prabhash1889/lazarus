@@ -525,7 +525,7 @@ mod tests {
             .iter()
             .find(|method| method["name"] == "system.getInfo")
             .expect("system.getInfo is reported");
-        assert_eq!(info["version"], "1.0");
+        assert_eq!(info["version"], "1.1");
         assert!(json.get("negotiatedVersion").is_none());
 
         let failed = HostStatus {

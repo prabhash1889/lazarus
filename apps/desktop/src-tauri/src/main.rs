@@ -4,6 +4,7 @@
 mod deep_link;
 mod host_lifecycle;
 mod host_status;
+mod transport;
 mod window_state;
 
 use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
@@ -64,6 +65,9 @@ fn main() {
             host_lifecycle::host_ensure,
             host_lifecycle::host_update,
             host_lifecycle::host_rollback,
+            transport::host_ipc_request,
+            transport::host_ipc_cancel,
+            transport::host_ipc_open_events,
         ])
         .setup(|app| {
             build_menu(app.handle())?;

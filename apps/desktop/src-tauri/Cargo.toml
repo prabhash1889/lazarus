@@ -11,13 +11,19 @@ publish = false
 tauri-build.workspace = true
 
 [dependencies]
+# HTTP/1 over the Host's local named pipe / Unix socket, driven by hand so
+# every request carries the full Lazarus Protocol contract headers.
+bytes = "1"
+hyper = { version = "1", default-features = false, features = ["client", "http1"] }
+hyper-util = { workspace = true }
+http-body-util = "0.1"
 protocol-rs = { path = "../../../crates/protocol-rs" }
 reqwest.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tauri.workspace = true
 tauri-plugin-single-instance.workspace = true
-tokio = { workspace = true, features = ["process", "time"] }
+tokio = { workspace = true, features = ["process", "time", "io-util", "sync"] }
 
 [lints]
 workspace = true
