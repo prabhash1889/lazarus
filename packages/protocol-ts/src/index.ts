@@ -51,3 +51,14 @@ export type {
   PersistenceRegistrySnapshot,
   ProtocolErrorCode,
 } from './registry/index.ts';
+// Payload schemas clients decode responses with directly (the method
+// registry above carries the same schemas; these named exports keep
+// call sites free of deep package-internal imports).
+export {
+  EventFrameSchema,
+  GetInfoRequestSchema,
+  GetInfoResponseSchema,
+  HealthRequestSchema,
+  HealthResponseSchema,
+} from './registry/schemas/system.ts';
+export { ProtocolErrorSchema, ErrorCodeSchema } from './registry/schemas/common.ts';
