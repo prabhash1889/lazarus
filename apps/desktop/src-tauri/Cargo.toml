@@ -16,6 +16,7 @@ reqwest.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tauri.workspace = true
+tauri-plugin-single-instance.workspace = true
 tokio = { workspace = true, features = ["process", "time"] }
 
 [lints]
