@@ -88,6 +88,9 @@ pub struct HostState {
     pub bus: EventBus,
     /// Process-local idempotency store shared by all write paths.
     pub idempotency: MemoryIdempotencyStore,
+    /// Unix-epoch millisecond stamp for when this Host incarnation began
+    /// serving; reported through `system.getInfo` v1.1+ as `startedAtUnixMs`.
+    started_at_unix_ms: u64,
     host_capabilities: HashMap<String, bool>,
     serving: AtomicBool,
     shutdown: broadcast::Sender<()>,
@@ -103,10 +106,16 @@ impl HostState {
         Self {
             bus: EventBus::with_event_capacity(event_capacity),
             idempotency: MemoryIdempotencyStore::new(),
+            started_at_unix_ms: unix_now_ms(),
             host_capabilities: HashMap::from([("events".to_owned(), true)]),
             serving: AtomicBool::new(true),
             shutdown,
         }
+    }
+
+    /// When this Host incarnation began serving (Unix epoch milliseconds).
+    pub fn started_at_unix_ms(&self) -> u64 {
+        self.started_at_unix_ms
     }
 
     pub fn host_capabilities(&self) -> &HashMap<String, bool> {
@@ -138,6 +147,15 @@ impl Default for HostState {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Current Unix epoch time in whole milliseconds; falls back to zero if the
+/// clock is before the epoch rather than failing a status request.
+fn unix_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

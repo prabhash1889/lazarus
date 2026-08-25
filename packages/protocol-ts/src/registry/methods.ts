@@ -52,7 +52,7 @@ export const METHODS: readonly MethodDefinition[] = [
   {
     name: 'system.getInfo',
     kind: 'unary',
-    version: { major: 1, minor: 0 },
+    version: { major: 1, minor: 1 },
     request: GetInfoRequestSchema,
     response: GetInfoResponseSchema,
     optional: false,

@@ -177,7 +177,8 @@ async fn phase15_unary_contract_end_to_end() {
     assert_advertises_host_manifest(&health);
     assert_eq!(health.body_json()["status"], "SERVING");
 
-    // System info exposes the Host version and capabilities.
+    // System info exposes the Host version, capabilities, and (v1.1+) the
+    // incarnation start stamp.
     let info = get_authed(addr, "/system/info").await;
     assert_eq!(info.status, 200);
     assert_advertises_host_manifest(&info);
@@ -187,6 +188,30 @@ async fn phase15_unary_contract_end_to_end() {
         env!("CARGO_PKG_VERSION").to_string()
     );
     assert_eq!(info_body["capabilities"]["events"], true);
+    let started_at = info_body["startedAtUnixMs"].as_u64().expect("start stamp");
+    assert!(started_at > 0, "the start stamp is a positive epoch ms");
+
+    // A bridged system.getInfo 1.0 peer receives the response without the
+    // additive v1.1 field.
+    let mut bridged_entries = full_floor_entries();
+    for entry in &mut bridged_entries {
+        if entry.0 == "system.getInfo" {
+            entry.2 = 0;
+        }
+    }
+    let bridged_info = get(
+        addr,
+        "/system/info",
+        Some(valid_auth_header()),
+        Some(&peer_manifest(&bridged_entries)),
+    )
+    .await;
+    assert_eq!(bridged_info.status, 200);
+    assert_eq!(
+        bridged_info.body_json()["startedAtUnixMs"],
+        serde_json::Value::Null,
+        "the declared 1.0 bridge strips the additive field"
+    );
 
     // Both list endpoints answer with empty stub pages and their manifest.
     let workspaces = get_authed(addr, "/workspaces").await;

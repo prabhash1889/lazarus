@@ -17,3 +17,14 @@ declareBridge({
   newer: { major: 1, minor: 2 },
   steps: [{ op: 'omitResponseFields', fields: ['servedAtUnixMs'] }],
 });
+
+/**
+ * `system.getInfo` 1.1 added the additive `startedAtUnixMs` response field;
+ * this bridge keeps released 1.0 peers interoperable by stripping that field.
+ */
+declareBridge({
+  method: 'system.getInfo',
+  older: { major: 1, minor: 0 },
+  newer: { major: 1, minor: 1 },
+  steps: [{ op: 'omitResponseFields', fields: ['startedAtUnixMs'] }],
+});

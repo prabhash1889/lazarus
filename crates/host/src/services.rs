@@ -361,11 +361,24 @@ where
     }
 }
 
-async fn system_info(State(services): State<HostServices>) -> Json<wire::SystemGetInfoResponse> {
-    Json(wire::SystemGetInfoResponse {
+/// `GET /system/info`: serves `system.getInfo` at this Host's minor, always
+/// including the v1.1+ additive `startedAtUnixMs` incarnation stamp. When
+/// negotiation resolved the bridged 1.0 peer minor, the declared bridge
+/// strips the field before the response is returned.
+async fn system_info(
+    negotiated: Option<Extension<NegotiatedMinor>>,
+    State(services): State<HostServices>,
+) -> Result<Json<serde_json::Value>, GateError> {
+    let mut body = serde_json::to_value(&wire::SystemGetInfoResponse {
         host_version: env!("CARGO_PKG_VERSION").to_owned(),
         capabilities: services.state.host_capabilities().clone(),
+        started_at_unix_ms: Some(services.state.started_at_unix_ms()),
     })
+    .map_err(|error| GateError::new(GateCode::Internal, error.to_string()))?;
+    if let Some(Extension(NegotiatedMinor(minor))) = negotiated {
+        apply_bridge_steps(&mut body, downgrade_response_steps("system.getInfo", minor));
+    }
+    Ok(Json(body))
 }
 
 async fn health(State(services): State<HostServices>) -> Json<wire::SystemHealthResponse> {

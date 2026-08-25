@@ -1,5 +1,5 @@
 {
-  "manifestFingerprint": "b223cb9f1c8a8e196d9eb3275723ffd487cf863e1aa0c5addaaca2ec320e6e7d",
+  "manifestFingerprint": "3199f66f3dc07c1384d5003cb278325aa9ddb8bad856a3798c66c0f14d6531f4",
   "methods": [
     {
       "name": "process.list",
@@ -55,11 +55,11 @@
       "name": "system.getInfo",
       "kind": "unary",
       "major": 1,
-      "minor": 0,
+      "minor": 1,
       "optional": false,
       "fallback": null,
       "requestFingerprint": "93ab7499dc3c616f8db8780fed0d9f69270803cda913882ad2ef3943db8d7225",
-      "responseFingerprint": "07dedac11947172fe27a313fe993236d4ef5c8b750384dee0a7eeb8ca78d2174"
+      "responseFingerprint": "102f8f8cd7fc11256a29c9077907f8df1ca5b646ba4e43d7026c895ad60b3a51"
     },
     {
       "name": "system.health",
@@ -115,6 +115,12 @@
     "workspace.list"
   ],
   "bridges": [
+    {
+      "name": "system.getInfo",
+      "olderMinor": 0,
+      "newerMinor": 1,
+      "steps": [{ "op": "omitResponseFields", "fields": ["startedAtUnixMs"] }]
+    },
     {
       "name": "task.list",
       "olderMinor": 0,

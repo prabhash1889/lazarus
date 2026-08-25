@@ -43,7 +43,7 @@ pub struct MethodBinding {
 
 /// Manifest fingerprint over all method bindings (see header).
 pub const MANIFEST_FINGERPRINT: &str =
-    "b223cb9f1c8a8e196d9eb3275723ffd487cf863e1aa0c5addaaca2ec320e6e7d";
+    "3199f66f3dc07c1384d5003cb278325aa9ddb8bad856a3798c66c0f14d6531f4";
 
 /// Generated method bindings, sorted by name.
 pub const METHOD_BINDINGS: &[MethodBinding] = &[
@@ -101,11 +101,11 @@ pub const METHOD_BINDINGS: &[MethodBinding] = &[
         name: "system.getInfo",
         kind: MethodKind::Unary,
         major: 1,
-        minor: 0,
+        minor: 1,
         optional: false,
         fallback: None,
         request_fingerprint: "93ab7499dc3c616f8db8780fed0d9f69270803cda913882ad2ef3943db8d7225",
-        response_fingerprint: "07dedac11947172fe27a313fe993236d4ef5c8b750384dee0a7eeb8ca78d2174",
+        response_fingerprint: "102f8f8cd7fc11256a29c9077907f8df1ca5b646ba4e43d7026c895ad60b3a51",
     },
     MethodBinding {
         name: "system.health",
@@ -169,6 +169,7 @@ pub const RELEASED_FLOOR: &[&str] = &[
 /// minors negotiates at that minor instead of being rejected.
 #[rustfmt::skip]
 pub const BRIDGED_PEER_MINORS: &[(&str, &[u32])] = &[
+    ("system.getInfo", &[0]),
     ("task.list", &[0]),
 ];
 
@@ -192,6 +193,13 @@ pub struct MethodBridgeBinding {
 /// Declared bridges, sorted by name then older minor.
 #[rustfmt::skip]
 pub const METHOD_BRIDGES: &[MethodBridgeBinding] = &[
+    MethodBridgeBinding {
+        name: "system.getInfo",
+        older_minor: 0,
+        steps: &[
+            BridgeStep::OmitResponseFields(&["startedAtUnixMs"]),
+        ],
+    },
     MethodBridgeBinding {
         name: "task.list",
         older_minor: 0,
@@ -805,12 +813,20 @@ pub mod wire {
         pub capabilities: HashMap<String, bool>,
         #[serde(rename = "hostVersion")]
         pub host_version: String,
+        #[serde(rename = "startedAtUnixMs", skip_serializing_if = "Option::is_none")]
+        pub started_at_unix_ms: Option<u64>,
     }
 
     impl SystemGetInfoResponse {
         /// Enforces exactly the constraints carried by the contract schema.
         pub fn validate(&self) -> Result<(), String> {
-            // No constraints beyond serde's decoding.
+            if self
+                .started_at_unix_ms
+                .as_ref()
+                .is_some_and(|v| *v > 9007199254740991)
+            {
+                return Err("startedAtUnixMs: must be at most 9007199254740991".to_string());
+            }
             Ok(())
         }
     }

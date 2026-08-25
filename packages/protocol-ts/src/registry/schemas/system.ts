@@ -15,11 +15,15 @@ export const GetInfoRequestSchema = z.object({});
 /**
  * Static Host metadata for capability negotiation. `hostVersion` is the
  * running Host's version string; `capabilities` is a feature-name -> support
- * map that only ever grows additively.
+ * map that only ever grows additively; `startedAtUnixMs` (added in v1.1)
+ * stamps when this Host incarnation began serving so clients can render
+ * uptime. Peers negotiated at 1.0 receive responses without the field via
+ * the declared bridge.
  */
 export const GetInfoResponseSchema = z.object({
   hostVersion: z.string(),
   capabilities: z.record(z.string(), z.boolean()),
+  startedAtUnixMs: z.number().int().nonnegative().optional(),
 });
 
 /**
