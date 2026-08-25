@@ -67,11 +67,12 @@ fn main() {
         ])
         .setup(|app| {
             build_menu(app.handle())?;
-            let store = WindowStateStore::new(app.handle())?;
+            let mut store = WindowStateStore::new(app.handle())?;
             if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
                 if let Some(geometry) = store.load() {
                     window_state::apply_saved_geometry(&window, &geometry);
                 }
+                store.save_now(app.handle());
                 deep_link::emit_from_argv(
                     app.handle(),
                     &std::env::args().skip(1).collect::<Vec<String>>(),
