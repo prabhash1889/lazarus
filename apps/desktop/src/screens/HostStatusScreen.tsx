@@ -1,5 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
+import { Button } from '../components/Button';
+import { Dialog } from '../components/Dialog';
 import { describeError } from '../components/RouteErrorFallback';
 import { invokeCommand } from '../lib/tauri';
 
@@ -47,7 +49,10 @@ function methodLabel(method: NegotiatedMethod): string {
   return `${method.name}=unavailable`;
 }
 
-function derivePill(status: HostStatus | undefined, isPending: boolean): { label: string; className: string } {
+function derivePill(
+  status: HostStatus | undefined,
+  isPending: boolean,
+): { label: string; className: string } {
   if (!status) {
     return isPending
       ? { label: 'Connecting...', className: 'pill pill-connecting' }
@@ -147,9 +152,7 @@ export default function HostStatusScreen() {
             <p role="alert" className="error">
               {describeError(statusQuery.error)}
             </p>
-            <button type="button" onClick={() => void statusQuery.refetch()}>
-              Retry
-            </button>
+            <Button onClick={() => void statusQuery.refetch()}>Retry</Button>
           </>
         ) : null}
 
@@ -197,22 +200,21 @@ export default function HostStatusScreen() {
         ) : null}
 
         <div className="actions">
-          <button
-            type="button"
+          <Button
+            variant="primary"
             disabled={busy || (status?.connected ?? false)}
             onClick={() => lifecycleMutation.mutate('host_start')}
           >
             Start Host
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            variant="danger"
             disabled={busy || !status?.connected}
             onClick={() => lifecycleMutation.mutate('host_stop')}
           >
             Stop Host
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
             disabled={busy}
             onClick={() => {
               setDoctorOpen(true);
@@ -220,39 +222,31 @@ export default function HostStatusScreen() {
             }}
           >
             Run Doctor
-          </button>
-          <button type="button" disabled={busy} onClick={() => void statusQuery.refetch()}>
+          </Button>
+          <Button disabled={busy} onClick={() => void statusQuery.refetch()}>
             Refresh
-          </button>
+          </Button>
         </div>
       </section>
 
-      {doctorOpen ? (
-        <section className="doctor-panel" aria-label="Doctor report">
-          <div className="doctor-header">
-            <h2>Doctor</h2>
-            <button type="button" className="link-button" onClick={() => setDoctorOpen(false)}>
-              Close
-            </button>
-          </div>
-          {doctorMutation.isPending ? (
-            <p className="muted">Running diagnostics...</p>
-          ) : doctorMutation.isError ? (
+      <Dialog open={doctorOpen} onOpenChange={setDoctorOpen} title="Doctor">
+        {doctorMutation.isPending ? (
+          <p className="muted">Running diagnostics...</p>
+        ) : doctorMutation.isError ? (
+          <p role="alert" className="error">
+            {describeError(doctorMutation.error)}
+          </p>
+        ) : doctor ? (
+          doctor.ok ? (
+            <ReportValue value={doctor.report ?? {}} />
+          ) : (
             <p role="alert" className="error">
-              {describeError(doctorMutation.error)}
+              {doctor.error ?? 'Doctor reported failures.'}
+              {doctor.report !== undefined ? <ReportValue value={doctor.report} /> : null}
             </p>
-          ) : doctor ? (
-            doctor.ok ? (
-              <ReportValue value={doctor.report ?? {}} />
-            ) : (
-              <p role="alert" className="error">
-                {doctor.error ?? 'Doctor reported failures.'}
-                {doctor.report !== undefined ? <ReportValue value={doctor.report} /> : null}
-              </p>
-            )
-          ) : null}
-        </section>
-      ) : null}
+          )
+        ) : null}
+      </Dialog>
     </main>
   );
 }

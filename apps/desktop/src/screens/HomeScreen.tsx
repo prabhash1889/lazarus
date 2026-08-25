@@ -1,4 +1,5 @@
 import { Link } from '@tanstack/react-router';
+import { Button } from '../components/Button';
 
 export default function HomeScreen() {
   return (
@@ -12,7 +13,9 @@ export default function HomeScreen() {
           workspace, and agent features arrive in later phases.
         </p>
         <div className="actions">
-          <Link to="/host-status">Open Host status</Link>
+          <Button variant="primary" asChild>
+            <Link to="/host-status">Open Host status</Link>
+          </Button>
         </div>
       </section>
     </main>

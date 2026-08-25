@@ -11,6 +11,7 @@ import { lazy, useEffect, type ReactNode } from 'react';
 import { ErrorBoundary } from '../components/ErrorBoundary';
 import { RouteErrorFallback } from '../components/RouteErrorFallback';
 import { RoutePending } from '../components/RoutePending';
+import { ThemeToggle } from '../components/ThemeToggle';
 import { DEEP_LINK_EVENT, isNavTarget, NAVIGATE_EVENT } from '../lib/shell-events';
 import { listenToEvent } from '../lib/tauri';
 
@@ -52,6 +53,7 @@ function RootLayout(): ReactNode {
               Host Status
             </Link>
           </nav>
+          <ThemeToggle />
         </header>
         <div className="app-content">
           <Outlet />

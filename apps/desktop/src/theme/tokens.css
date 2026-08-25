@@ -1,0 +1,75 @@
+:root {
+  color-scheme: light;
+
+  --color-bg: #f6f7f9;
+  --color-surface: #ffffff;
+  --color-surface-hover: #eef1f5;
+  --color-border: #d9dde3;
+  --color-text: #171b23;
+  --color-text-muted: #5b6472;
+  --color-accent: #0e7490;
+  --color-accent-hover: #155e75;
+  --color-accent-soft: rgba(14, 116, 144, 0.12);
+  --color-accent-contrast: #ffffff;
+  --color-success: #15803d;
+  --color-success-soft: rgba(21, 128, 61, 0.14);
+  --color-warning: #b45309;
+  --color-warning-soft: rgba(180, 83, 9, 0.14);
+  --color-danger: #b91c1c;
+  --color-danger-soft: rgba(185, 28, 28, 0.12);
+  --color-focus-ring: rgba(14, 116, 144, 0.45);
+
+  --font-sans: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: ui-monospace, 'Cascadia Code', 'SF Mono', Consolas, monospace;
+
+  --text-xs: 0.75rem;
+  --text-sm: 0.8125rem;
+  --text-md: 0.875rem;
+  --text-lg: 1rem;
+  --text-xl: 1.25rem;
+  --text-2xl: 1.75rem;
+
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+  --space-7: 3rem;
+  --space-8: 4rem;
+
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-full: 999px;
+
+  --shadow-overlay: 0 16px 48px rgba(0, 0, 0, 0.22);
+}
+
+[data-theme='dark'] {
+  color-scheme: dark;
+
+  --color-bg: #0b0e14;
+  --color-surface: #131722;
+  --color-surface-hover: #1a2030;
+  --color-border: #2a3245;
+  --color-text: #e6e9ef;
+  --color-text-muted: #98a2b3;
+  --color-accent: #2dd4bf;
+  --color-accent-hover: #5eead4;
+  --color-accent-soft: rgba(45, 212, 191, 0.14);
+  --color-accent-contrast: #04211c;
+  --color-success: #4ade80;
+  --color-success-soft: rgba(74, 222, 128, 0.14);
+  --color-warning: #fbbf24;
+  --color-warning-soft: rgba(251, 191, 36, 0.14);
+  --color-danger: #f87171;
+  --color-danger-soft: rgba(248, 113, 113, 0.14);
+  --color-focus-ring: rgba(45, 212, 191, 0.5);
+
+  --shadow-overlay: 0 16px 48px rgba(0, 0, 0, 0.55);
+}
