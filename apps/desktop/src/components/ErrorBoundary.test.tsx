@@ -21,14 +21,16 @@ describe('ErrorBoundary', () => {
   it('renders the fallback with a recovery action instead of blanking', () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     render(
-      <ErrorBoundary fallback={({ error, reset }) => (
-        <div>
-          <p>{error.message}</p>
-          <button type="button" onClick={reset}>
-            Try again
-          </button>
-        </div>
-      )}>
+      <ErrorBoundary
+        fallback={({ error, reset }) => (
+          <div>
+            <p>{error.message}</p>
+            <button type="button" onClick={reset}>
+              Try again
+            </button>
+          </div>
+        )}
+      >
         <Boom />
       </ErrorBoundary>,
     );
@@ -39,11 +41,19 @@ describe('ErrorBoundary', () => {
   it('recovers when the reset action re-renders a healthy tree', () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     render(
-      <ErrorBoundary fallback={({ reset }) => (
-        <button type="button" onClick={() => { explode = false; reset(); }}>
-          Try again
-        </button>
-      )}>
+      <ErrorBoundary
+        fallback={({ reset }) => (
+          <button
+            type="button"
+            onClick={() => {
+              explode = false;
+              reset();
+            }}
+          >
+            Try again
+          </button>
+        )}
+      >
         <Boom />
       </ErrorBoundary>,
     );

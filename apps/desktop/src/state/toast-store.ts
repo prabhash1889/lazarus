@@ -31,8 +31,7 @@ export const useToastStore = create<ToastState>((set) => ({
       useToastStore.getState().dismiss(id);
     }, AUTO_DISMISS_MS);
   },
-  dismiss: (id) =>
-    set((state) => ({ toasts: state.toasts.filter((toast) => toast.id !== id) })),
+  dismiss: (id) => set((state) => ({ toasts: state.toasts.filter((toast) => toast.id !== id) })),
 }));
 
 export function pushToast(toast: Omit<Toast, 'id'>): void {
