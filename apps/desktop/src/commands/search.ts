@@ -52,7 +52,7 @@ export function fuzzyMatch(query: string, text: string): number | null {
   const exactIndex = lowerText.indexOf(lowerQuery);
   if (exactIndex >= 0) {
     let score = 100 + lowerQuery.length * 4 - exactIndex;
-    if (exactIndex === 0 || /[\s/_.:\-]/.test(lowerText[exactIndex - 1] ?? '')) {
+    if (exactIndex === 0 || /[\s/_.:-]/.test(lowerText[exactIndex - 1] ?? '')) {
       score += 20;
     }
     return score;
@@ -71,7 +71,7 @@ export function fuzzyMatch(query: string, text: string): number | null {
     } else {
       score -= Math.min(found - previousMatch - 1, 8);
     }
-    if (found === 0 || /[\s/_.:\-]/.test(lowerText[found - 1] ?? '')) {
+    if (found === 0 || /[\s/_.:-]/.test(lowerText[found - 1] ?? '')) {
       score += 12;
     }
     previousMatch = found;
