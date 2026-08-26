@@ -9,6 +9,7 @@ import {
 import type { PointerEvent as ReactPointerEvent } from 'react';
 
 import { joinClassNames } from '../Button';
+import { useFocusTrap } from '../../lib/a11y/focus-trap';
 import { handleRovingKeys, rovingTabIndex } from '../../lib/a11y/roving-tabindex';
 import { useEpicsStore } from '../../state/epics-store';
 import { PINNED_TABS, useShellStore, type TabId } from '../../state/shell-store';
@@ -59,7 +60,12 @@ export function TabStrip(props: TabStripProps): ReactNode {
   const tabRefs = useRef<Array<HTMLButtonElement | HTMLDivElement | null>>([]);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const measureRefs = useRef<Array<HTMLDivElement | null>>([]);
+  const overflowMenuRef = useRef<HTMLDivElement | null>(null);
   const drag = useRef<{ index: number; startX: number; active: boolean } | null>(null);
+
+  // While the overflow menu is open, keyboard focus is contained inside it
+  // and returns to the overflow button when it closes (Phase 3.5).
+  useFocusTrap({ active: menuOpen, containerRef: overflowMenuRef });
 
   const visible = epicTabs.slice(0, Math.max(0, inlineCount));
   const hidden = epicTabs.slice(Math.max(0, inlineCount));
@@ -280,18 +286,27 @@ export function TabStrip(props: TabStripProps): ReactNode {
             aria-expanded={menuOpen}
             className="shell-tab shell-tab-overflow"
             data-testid="tab-overflow"
-            onClick={() => setMenuOpen((open) => !open)}
+            onClick={(event) => {
+              // Guarantee a restore target for the focus trap even on
+              // platforms where pointer clicks do not move focus.
+              event.currentTarget.focus();
+              setMenuOpen((open) => !open);
+            }}
           >
             +{hidden.length}
           </button>
           {menuOpen ? (
-            <div className="tabstrip-menu" role="menu" aria-label="Hidden Epic tabs">
+            <div
+              ref={overflowMenuRef}
+              className="tabstrip-menu"
+              role="menu"
+              aria-label="Hidden Epic tabs"
+            >
               {hidden.map((epicId) => (
                 <button
                   key={epicId}
                   type="button"
                   role="menuitem"
-                  tabIndex={-1}
                   className="tabstrip-menu-item"
                   data-testid={`overflow-item-${epicId}`}
                   onClick={() => {

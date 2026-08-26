@@ -254,4 +254,65 @@ describe('header tab strip', () => {
       expect(tabs[0]?.getAttribute('tabindex')).toBe('-1');
     });
   });
+
+  describe('overflow menu focus management', () => {
+    function renderNarrowStrip(ids: string[]): void {
+      render(
+        <TabStrip
+          activeTab="draft"
+          onSelect={vi.fn()}
+          onClose={vi.fn()}
+          onReorder={vi.fn()}
+          onNewEpic={vi.fn()}
+        />,
+      );
+      const container = screen.getByTestId('tab-strip');
+      container.getBoundingClientRect = () =>
+        ({
+          left: 0,
+          right: 280,
+          top: 0,
+          bottom: 32,
+          width: 280,
+          height: 32,
+          x: 0,
+          y: 0,
+          toJSON: () => undefined,
+        }) as DOMRect;
+      for (const id of ids) {
+        const el = screen.getByTestId(`tab-${id}`);
+        el.getBoundingClientRect = () =>
+          ({
+            left: 0,
+            right: 96,
+            top: 0,
+            bottom: 32,
+            width: 96,
+            height: 32,
+            x: 0,
+            y: 0,
+            toJSON: () => undefined,
+          }) as DOMRect;
+      }
+      useShellStore.setState((state) => ({ epicTabs: [...state.epicTabs] }));
+    }
+
+    it('focuses the first item on open, contains Tab, and restores on Escape', async () => {
+      const ids = seedEpics(4);
+      const user = userEvent.setup();
+      renderNarrowStrip(ids);
+
+      await user.click(await screen.findByTestId('tab-overflow'));
+      expect(document.activeElement).toBe(screen.getByTestId(`overflow-item-${ids[2]}`));
+
+      // Tab cycles within the menu instead of leaving it.
+      await user.keyboard('{Tab}');
+      expect(screen.getByTestId('tab-strip').contains(document.activeElement)).toBe(true);
+      expect(document.activeElement?.getAttribute('role')).toBe('menuitem');
+
+      await user.keyboard('{Escape}');
+      expect(screen.queryByTestId('tab-overflow')?.getAttribute('aria-expanded')).toBe('false');
+      expect(document.activeElement).toBe(await screen.findByTestId('tab-overflow'));
+    });
+  });
 });
