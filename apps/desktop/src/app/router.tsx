@@ -35,6 +35,7 @@ const SettingsLazy = lazy(() => import('../screens/settings/SettingsScreen'));
 const DraftLazy = lazy(() => import('../screens/DraftScreen'));
 const HistoryLazy = lazy(() => import('../screens/HistoryScreen'));
 const EpicLazy = lazy(() => import('../screens/EpicScreen'));
+const EngineMatrixLazy = lazy(() => import('../screens/EngineMatrixScreen'));
 
 /** Maps the current location onto its shell tab id. */
 export function tabIdForPath(pathname: string): TabId | null {
@@ -179,6 +180,14 @@ const epicRoute = createRoute({
   errorComponent: RouteErrorFallback,
 });
 
+const engineMatrixRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/engine-matrix',
+  component: EngineMatrixLazy,
+  pendingComponent: RoutePending,
+  errorComponent: RouteErrorFallback,
+});
+
 const settingsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/settings',
@@ -224,6 +233,7 @@ const routeTree = rootRoute.addChildren([
   draftRoute,
   historyRoute,
   epicRoute,
+  engineMatrixRoute,
   settingsRouteTree,
 ]);
 

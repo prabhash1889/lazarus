@@ -11,12 +11,7 @@ import { engineResetForTests } from '../commands/CommandHost';
 import { Dialog } from '../components/Dialog';
 import { CommandPalette } from '../components/CommandPalette';
 import { TileCanvas } from '../components/canvas/TileCanvas';
-import {
-  emptyCanvasDoc,
-  openTile,
-  splitLeaf,
-  type CanvasDoc,
-} from '../lib/canvas/split-tree';
+import { emptyCanvasDoc, openTile, splitLeaf, type CanvasDoc } from '../lib/canvas/split-tree';
 import { useConnectionStore } from '../lib/host/connection-store';
 import HostStatusScreen from '../screens/HostStatusScreen';
 import { resetEpicsForTests, useEpicsStore } from '../state/epics-store';
@@ -80,6 +75,20 @@ describe('phase 3 accessibility scans', () => {
 
   it('Settings screen passes', async () => {
     await scanRoute('/settings');
+  });
+
+  it('engine rendering matrix passes', async () => {
+    const router = createAppRouter(createMemoryHistory({ initialEntries: ['/engine-matrix'] }));
+    const { container } = render(
+      <ThemeProvider>
+        <QueryClientProvider client={makeQueryClient()}>
+          <RouterProvider router={router} />
+        </QueryClientProvider>
+      </ThemeProvider>,
+    );
+    await screen.findByText('xterm.js terminal');
+    await screen.findByTestId('diff-prototype');
+    await expectNoAxeViolations(container);
   });
 
   it('Host status screen passes in connected and failed phases', async () => {
@@ -231,9 +240,7 @@ describe('phase 3 accessibility scans', () => {
     // button per wrapper), exercising the aria-owns ownership path.
     const first = useEpicsStore.getState().createEpic('Alpha');
     useEpicsStore.getState().createEpic('Beta');
-    const router = createAppRouter(
-      createMemoryHistory({ initialEntries: [`/epic/${first.id}`] }),
-    );
+    const router = createAppRouter(createMemoryHistory({ initialEntries: [`/epic/${first.id}`] }));
     const { container } = render(
       <ThemeProvider>
         <QueryClientProvider client={makeQueryClient()}>

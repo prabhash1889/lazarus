@@ -17,9 +17,7 @@ const JSDOM_UNRELIABLE_RULES = [
 
 export async function scanAccessibility(container: HTMLElement): Promise<AxeResults> {
   return run(container, {
-    rules: Object.fromEntries(
-      JSDOM_UNRELIABLE_RULES.map((rule) => [rule, { enabled: false }]),
-    ),
+    rules: Object.fromEntries(JSDOM_UNRELIABLE_RULES.map((rule) => [rule, { enabled: false }])),
   });
 }
 

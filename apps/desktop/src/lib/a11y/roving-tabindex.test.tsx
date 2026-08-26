@@ -35,11 +35,21 @@ describe('handleRovingKeys', () => {
   it('uses vertical arrows for vertical orientation', () => {
     const onMove = vi.fn();
     expect(
-      handleRovingKeys(keyEvent('ArrowDown'), { count: 3, current: 1, onMove, orientation: 'vertical' }),
+      handleRovingKeys(keyEvent('ArrowDown'), {
+        count: 3,
+        current: 1,
+        onMove,
+        orientation: 'vertical',
+      }),
     ).toBe(true);
     expect(onMove).toHaveBeenCalledWith(2);
     expect(
-      handleRovingKeys(keyEvent('ArrowRight'), { count: 3, current: 1, onMove, orientation: 'vertical' }),
+      handleRovingKeys(keyEvent('ArrowRight'), {
+        count: 3,
+        current: 1,
+        onMove,
+        orientation: 'vertical',
+      }),
     ).toBe(false);
     expect(onMove).toHaveBeenCalledTimes(1);
   });

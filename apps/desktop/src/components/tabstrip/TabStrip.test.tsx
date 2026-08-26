@@ -201,7 +201,13 @@ describe('header tab strip', () => {
       const tablist = screen.getByTestId('tab-list');
       expect(tablist.getAttribute('role')).toBe('tablist');
       const tabs = screen.getAllByRole('tab');
-      expect(tabs.map((tab) => tab.getAttribute('tabindex'))).toEqual(['-1', '0', '-1', '-1', '-1']);
+      expect(tabs.map((tab) => tab.getAttribute('tabindex'))).toEqual([
+        '-1',
+        '0',
+        '-1',
+        '-1',
+        '-1',
+      ]);
     });
 
     it('moves the roving tab stop with arrow keys without activating', async () => {

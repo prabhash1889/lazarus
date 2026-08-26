@@ -76,6 +76,13 @@ export function useRegisterAppCommands(): void {
         run: () => void router.navigate({ to: '/host-status' }),
       }),
       register({
+        id: 'dev.engineMatrix',
+        title: 'Open engine rendering matrix',
+        section: 'Navigate',
+        keywords: ['engine', 'matrix', 'webview', 'xterm', 'codemirror', 'diff', 'accessibility'],
+        run: () => void router.navigate({ to: '/engine-matrix' }),
+      }),
+      register({
         id: 'nav.settings.providers',
         title: 'Settings: Providers',
         section: 'Navigate',
