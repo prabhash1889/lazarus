@@ -19,7 +19,12 @@ function parseBlock(css: string, selector: RegExp): Palette {
   }
   const palette: Palette = {};
   const declarations = match[1].matchAll(/(--color[\w-]*)\s*:\s*([^;]+);/g);
-  for (const [, name, value] of declarations) {
+  for (const declaration of declarations) {
+    const name = declaration[1];
+    const value = declaration[2];
+    if (name === undefined || value === undefined) {
+      continue;
+    }
     palette[name] = value.trim();
   }
   return palette;
@@ -55,11 +60,7 @@ function composite(top: string, base: Rgb): Rgb {
   const [r, g, b, alpha = 1] = parts;
   const blend = (topChannel: number | undefined, baseChannel: number): number =>
     Math.round((topChannel ?? 0) * alpha + baseChannel * (1 - alpha));
-  return [
-    blend(r, base[0]),
-    blend(g, base[1]),
-    blend(b, base[2]),
-  ] as unknown as Rgb;
+  return [blend(r, base[0]), blend(g, base[1]), blend(b, base[2])];
 }
 
 function luminance([r, g, b]: Rgb): number {
@@ -83,20 +84,14 @@ function contrast(a: Rgb, b: Rgb): number {
  */
 function resolvePair(palette: Palette, fgToken: string, bgToken: string): { fg: Rgb; bg: Rgb } {
   const fgValue = palette[fgToken];
-  if (fgValue === undefined) {
-    throw new Error(`missing token ${fgToken}`);
+  const bgValue = palette[bgToken];
+  const surface = palette['--color-surface'];
+  if (fgValue === undefined || bgValue === undefined || surface === undefined) {
+    throw new Error(`missing token ${fgToken} / ${bgToken} / --color-surface`);
   }
   // Alpha backgrounds sit on the surface color in every current usage.
-  const bgBase =
-    palette[bgToken]?.startsWith('rgba') === true ? hexToRgb(palette['--color-surface']!) : null;
-  let bg: Rgb = bgBase ?? hexToRgb(palette[bgToken]!);
-  const fg: Rgb =
-    palette[fgToken].startsWith('rgba') === true
-      ? composite(palette[fgToken], bg)
-      : hexToRgb(palette[fgToken]);
-  if (palette[bgToken].startsWith('rgba')) {
-    bg = composite(palette[bgToken], hexToRgb(palette['--color-surface']!));
-  }
+  const bg = bgValue.startsWith('rgba') ? composite(bgValue, hexToRgb(surface)) : hexToRgb(bgValue);
+  const fg = fgValue.startsWith('rgba') ? composite(fgValue, bg) : hexToRgb(fgValue);
   return { fg, bg };
 }
 
