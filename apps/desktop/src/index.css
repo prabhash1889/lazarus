@@ -2,6 +2,20 @@
   box-sizing: border-box;
 }
 
+/* Honor the OS "reduce motion" preference (Phase 3.5): neutralize CSS
+   transitions/animations globally; JS-driven motion must consult
+   useReducedMotion(). */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
 html,
 body,
 #root {
