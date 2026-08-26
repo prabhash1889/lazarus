@@ -135,17 +135,19 @@ describe('navigation reachability', () => {
     await renderAppAndWaitForShell();
 
     await user.click(screen.getByTestId('tab-draft'));
-    expect(await screen.findByTestId('draft-placeholder')).toBeTruthy();
+    expect(await screen.findByTestId('draft-screen')).toBeTruthy();
 
     await user.click(screen.getByTestId('tab-history'));
-    expect(await screen.findByTestId('history-placeholder')).toBeTruthy();
+    expect(await screen.findByTestId('history-screen')).toBeTruthy();
   });
 
   it('opens an Epic tab from a deep link and registers it in the strip', async () => {
     const router = await renderAppAndWaitForShell();
 
     await router.navigate({ to: '/epic/$taskId', params: { taskId: 'epic-deep-link' } });
-    expect(await screen.findByTestId('epic-placeholder')).toBeTruthy();
+    // The canvas appears once the layout load resolves (degraded to
+    // session-only when no Host is reachable in tests).
+    expect(await screen.findByTestId('tile-canvas')).toBeTruthy();
     expect(screen.getByTestId('tab-epic-deep-link')).toBeTruthy();
     expect(router.state.location.pathname).toBe('/epic/epic-deep-link');
   });
@@ -158,9 +160,9 @@ describe('navigation reachability', () => {
     await user.type(screen.getByTestId('palette-input'), 'new epic');
     await user.keyboard('{Enter}');
 
-    expect(await screen.findByTestId('epic-placeholder')).toBeTruthy();
+    expect(await screen.findByTestId('tile-canvas')).toBeTruthy();
     expect(router.state.location.pathname).toMatch(/^\/epic\/epic-/);
-    // The canvas starts empty inside the Epic tab (wired fully in the
-    // screens commit).
+    // The canvas starts empty inside the Epic tab.
+    expect(screen.getByTestId('tile-empty-state')).toBeTruthy();
   });
 });

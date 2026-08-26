@@ -832,3 +832,309 @@ button.shell-tab-active:hover {
   background: var(--color-accent-soft);
   color: var(--color-accent);
 }
+
+/* Tile canvas and Epic surface (Phase 3.4). */
+
+.epic-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: var(--space-3) var(--space-4);
+  gap: var(--space-2);
+}
+
+.epic-header {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  flex: none;
+}
+
+.epic-header h1 {
+  margin: 0;
+  font-size: var(--text-xl);
+}
+
+.tile-canvas {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+}
+
+.tile-split {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.tile-split-child {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+}
+
+.tile-splitter {
+  flex: none;
+  background: var(--color-border);
+  z-index: 5;
+}
+
+.tile-splitter-row {
+  width: 5px;
+  margin: 0 -2px;
+  cursor: col-resize;
+}
+
+.tile-splitter-column {
+  height: 5px;
+  margin: -2px 0;
+  cursor: row-resize;
+}
+
+.tile-splitter-active,
+.tile-splitter:focus-visible {
+  background: var(--color-accent);
+}
+
+.tile-pane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.tile-pane-header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  height: 34px;
+  padding: 0 var(--space-2);
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-bg);
+}
+
+.tile-pane-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.tile-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 3px var(--space-2);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-muted);
+  font: inherit;
+  font-size: var(--text-xs);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.tile-tab:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-text);
+}
+
+.tile-tab-active,
+.tile-tab-active:hover {
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
+
+.tile-tab-close {
+  visibility: hidden;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-size: var(--text-sm);
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+.tile-tab:hover .tile-tab-close,
+.tile-tab-close:focus-visible {
+  visibility: visible;
+}
+
+.tile-pane-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.tile-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.tile-action:hover:not(:disabled) {
+  background: var(--color-surface-hover);
+  color: var(--color-text);
+}
+
+.tile-action:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.tile-pane-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+.tile-empty {
+  margin: auto;
+  max-width: 420px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  align-items: center;
+  padding: var(--space-4);
+}
+
+.tile-empty-title {
+  margin: 0;
+  font-weight: var(--weight-semibold);
+}
+
+.tile-placeholder {
+  padding: var(--space-4) var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  max-width: 640px;
+}
+
+.tile-placeholder-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.tile-placeholder-note,
+.tile-placeholder-hint {
+  margin: 0;
+  font-size: var(--text-sm);
+}
+
+.tile-placeholder-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.tile-placeholder-field input {
+  height: 32px;
+  padding: 0 var(--space-2);
+  font: inherit;
+  color: inherit;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+/* Draft composer. */
+
+.draft-screen {
+  align-items: stretch;
+  max-width: 720px;
+  margin: 0 auto;
+}
+
+.draft-card label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.draft-card input,
+.draft-card textarea {
+  font: inherit;
+  color: inherit;
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.draft-card textarea {
+  resize: vertical;
+}
+
+/* History screen. */
+
+.history-screen {
+  align-items: stretch;
+  max-width: 860px;
+  margin: 0 auto;
+}
+
+.history-filters {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.history-filters input {
+  height: 36px;
+  padding: 0 var(--space-3);
+  font: inherit;
+  color: inherit;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.history-list {
+  border: 1px solid var(--color-border);
+}
+
+.history-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  padding: 0 var(--space-3);
+  font-size: var(--text-sm);
+}
+
+.history-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
