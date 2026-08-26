@@ -61,6 +61,25 @@ conventions; deviations need a new ADR.
 - Use the wrappers instead of importing Radix directly in screens so focus management, ARIA
   attributes, and theming stay consistent.
 
+## Accessibility (Phase 3.5)
+
+- Composite widgets use roving tabindex from `src/lib/a11y/roving-tabindex.ts`: exactly one tab
+  stop per widget, arrow keys move focus, activation stays manual (Enter/Space/click).
+- Tab strips whose visible layout wraps each tab in a container keep ARIA ownership intact with a
+  visually-hidden `role="tablist"` element that owns tabs through `aria-owns`; do not nest
+  interactive controls inside tab buttons.
+- Custom overlays (menus, drawers) trap and restore focus with `useFocusTrap` from
+  `src/lib/a11y/focus-trap.ts`; Radix dialogs and the command palette rely on their own trapping.
+- JS-driven motion must consult `useReducedMotion()`; CSS transitions are already neutralized
+  under `prefers-reduced-motion: reduce`.
+- Every text-bearing color pair must pass WCAG AA; `tokens.contrast.test.ts` enforces this against
+  `tokens.css` in both palettes, so token edits fail CI when they break legibility.
+- Screens must stay axe-clean: `src/a11y/phase3.a11y.test.tsx` scans every Phase 3 surface. Add a
+  scan for any new screen or dialog.
+- Heavy-component rendering status across WebView engines is tracked in
+  `engine-rendering-matrix.md`; re-run the matrix before shipping features that depend on those
+  components.
+
 ## Tauri shell contract
 
 - The Rust shell owns: single-instance focus, the native menu, deep-link argv capture
