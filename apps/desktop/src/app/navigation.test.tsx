@@ -8,6 +8,8 @@ import { createAppRouter } from './router';
 import { useCommandRegistry } from '../commands/command-registry';
 import { engineResetForTests } from '../commands/CommandHost';
 import { useConnectionStore } from '../lib/host/connection-store';
+import { resetEpicsForTests } from '../state/epics-store';
+import { resetShellForTests } from '../state/shell-store';
 import { usePaletteStore } from '../state/palette-store';
 import { ThemeProvider } from '../theme/ThemeProvider';
 
@@ -40,6 +42,8 @@ describe('navigation reachability', () => {
     useCommandRegistry.setState({ commands: {}, order: [], usage: {} });
     usePaletteStore.setState({ open: false });
     useConnectionStore.getState().reset();
+    resetShellForTests();
+    resetEpicsForTests();
     window.localStorage.clear();
     engineResetForTests();
   });
@@ -115,5 +119,48 @@ describe('navigation reachability', () => {
     expect(await screen.findByRole('heading', { name: 'Keybindings' })).toBeTruthy();
     expect(document.querySelector('.keybindings-table')).not.toBeNull();
     expect(screen.getByText('Open command palette')).toBeTruthy();
+  });
+
+  it('renders the persistent tab strip with the pinned system tabs', async () => {
+    await renderAppAndWaitForShell();
+
+    expect(screen.getByTestId('tab-strip')).toBeTruthy();
+    for (const pinned of ['tab-draft', 'tab-history', 'tab-settings']) {
+      expect(screen.getByTestId(pinned)).toBeTruthy();
+    }
+  });
+
+  it('reaches Draft and History through their tabs', async () => {
+    const user = userEvent.setup();
+    await renderAppAndWaitForShell();
+
+    await user.click(screen.getByTestId('tab-draft'));
+    expect(await screen.findByTestId('draft-placeholder')).toBeTruthy();
+
+    await user.click(screen.getByTestId('tab-history'));
+    expect(await screen.findByTestId('history-placeholder')).toBeTruthy();
+  });
+
+  it('opens an Epic tab from a deep link and registers it in the strip', async () => {
+    const router = await renderAppAndWaitForShell();
+
+    await router.navigate({ to: '/epic/$taskId', params: { taskId: 'epic-deep-link' } });
+    expect(await screen.findByTestId('epic-placeholder')).toBeTruthy();
+    expect(screen.getByTestId('tab-epic-deep-link')).toBeTruthy();
+    expect(router.state.location.pathname).toBe('/epic/epic-deep-link');
+  });
+
+  it('creates stub Epic tabs via the palette New Epic command', async () => {
+    const user = userEvent.setup();
+    const router = await renderAppAndWaitForShell();
+
+    await user.keyboard('{Control>}k{/Control}');
+    await user.type(screen.getByTestId('palette-input'), 'new epic');
+    await user.keyboard('{Enter}');
+
+    expect(await screen.findByTestId('epic-placeholder')).toBeTruthy();
+    expect(router.state.location.pathname).toMatch(/^\/epic\/epic-/);
+    // The canvas starts empty inside the Epic tab (wired fully in the
+    // screens commit).
   });
 });

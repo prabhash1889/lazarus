@@ -53,7 +53,17 @@ body {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  flex: 1;
+  flex: none;
+}
+
+.nav-link-small {
+  font-size: var(--text-xs);
+  height: 26px;
+  padding: 0 var(--space-2);
+}
+
+.app-header-with-tabs {
+  gap: var(--space-4);
 }
 
 .nav-link {
@@ -679,4 +689,146 @@ kbd {
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--color-text-muted);
+}
+
+/* Header tab strip (Phase 3.4). */
+
+.tabstrip {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.shell-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 30px;
+  padding: 0 var(--space-3);
+  max-width: 200px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--color-text-muted);
+  font: inherit;
+  font-size: var(--text-sm);
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
+}
+
+button.shell-tab:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-text);
+}
+
+.shell-tab-active,
+button.shell-tab-active:hover {
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
+
+.shell-tab-epic {
+  padding-right: var(--space-1);
+  touch-action: none;
+}
+
+.shell-tab-dragging {
+  opacity: 0.6;
+  outline: 1px dashed var(--color-border);
+}
+
+.shell-tab-label {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: inherit;
+}
+
+.shell-tab-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.shell-tab-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  font-size: var(--text-md);
+  line-height: 1;
+  cursor: pointer;
+  visibility: hidden;
+}
+
+.shell-tab-epic:hover .shell-tab-close,
+.shell-tab-close:focus-visible {
+  visibility: visible;
+}
+
+.shell-tab-close:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-danger);
+}
+
+.shell-tab-new {
+  font-weight: var(--weight-semibold);
+}
+
+.tabstrip-overflow {
+  position: relative;
+}
+
+.tabstrip-menu {
+  position: absolute;
+  top: calc(100% + var(--space-1));
+  left: 0;
+  z-index: 60;
+  min-width: 180px;
+  max-height: 320px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-overlay);
+  padding: var(--space-1);
+}
+
+.tabstrip-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: var(--space-2) var(--space-3);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text);
+  font: inherit;
+  font-size: var(--text-sm);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tabstrip-menu-item:hover {
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
 }

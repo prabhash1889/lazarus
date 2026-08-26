@@ -211,6 +211,16 @@ export function ensureCanvas(taskId: string): CanvasDoc {
   return doc;
 }
 
+/**
+ * Creates a stub Epic entity and opens its tab. Durable Task creation
+ * replaces this in Phase 8; until then this is how new Epic tabs appear.
+ */
+export function createStubEpic(title?: string): EpicEntity {
+  const entity = useEpicsStore.getState().createEpic(title);
+  useShellStore.getState().openEpic(entity.id);
+  return entity;
+}
+
 /** Test seam: reset both stores between tests. */
 export function resetShellForTests(): void {
   useShellStore.setState({ ...initialShellState });

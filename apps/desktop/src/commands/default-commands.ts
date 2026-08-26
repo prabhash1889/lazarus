@@ -5,6 +5,7 @@ import { pushToast } from '../state/toast-store';
 import { usePaletteStore } from '../state/palette-store';
 import { connectionManager } from '../lib/host/production-connection';
 import { useConnectionStore } from '../lib/host/connection-store';
+import { createStubEpic, useShellStore } from '../state/shell-store';
 import { useTheme } from '../theme/ThemeProvider';
 import { useCommandRegistry } from './command-registry';
 
@@ -42,6 +43,21 @@ export function useRegisterAppCommands(): void {
         keywords: ['home', 'start', 'dashboard'],
         shortcut: 'g h',
         run: () => void router.navigate({ to: '/' }),
+      }),
+      register({
+        id: 'nav.draft',
+        title: 'Go to Draft',
+        section: 'Navigate',
+        keywords: ['draft', 'compose', 'new'],
+        shortcut: 'g d',
+        run: () => void router.navigate({ to: '/draft' }),
+      }),
+      register({
+        id: 'nav.history',
+        title: 'Go to History',
+        section: 'Navigate',
+        keywords: ['history', 'tasks', 'previous', 'recent'],
+        run: () => void router.navigate({ to: '/history' }),
       }),
       register({
         id: 'nav.settings',
@@ -127,15 +143,42 @@ export function useRegisterAppCommands(): void {
       }),
       register({
         id: 'task.new',
-        title: 'New Task...',
+        title: 'New Epic tab',
         section: 'Tasks',
-        keywords: ['new', 'task', 'create', 'draft'],
-        run: () =>
+        keywords: ['new', 'epic', 'task', 'create'],
+        run: () => {
+          const entity = createStubEpic();
+          void router.navigate({ to: `/epic/${entity.id}` });
           pushToast({
             kind: 'info',
-            title: 'Task creation arrives in Phase 8',
-            detail: 'Durable Tasks land with persistence and agents.',
-          }),
+            title: 'Stub Epic opened',
+            detail: 'Durable Tasks with persistence arrive in Phase 8.',
+          });
+        },
+      }),
+      register({
+        id: 'tab.close',
+        title: 'Close current Epic tab',
+        section: 'Shell',
+        keywords: ['close', 'tab', 'epic'],
+        when: () => {
+          const { activeTab } = useShellStore.getState();
+          return useShellStore.getState().epicTabs.includes(activeTab);
+        },
+        run: () => {
+          const { activeTab, closeEpicTab } = useShellStore.getState();
+          closeEpicTab(activeTab);
+          const nextActive = useShellStore.getState().activeTab;
+          const path =
+            nextActive === 'draft'
+              ? '/draft'
+              : nextActive === 'history'
+                ? '/history'
+                : nextActive === 'settings'
+                  ? '/settings'
+                  : `/epic/${nextActive}`;
+          void router.navigate({ to: path });
+        },
       }),
     ];
     return () => {
