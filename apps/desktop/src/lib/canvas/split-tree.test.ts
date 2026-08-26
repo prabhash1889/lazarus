@@ -162,9 +162,25 @@ describe('canvas split tree', () => {
       't-c1',
     ]);
 
-    // Moving into a vanished leaf is refused rather than guessed.
-    const ghost = moveTile(initial.doc, 't-a1', 'leaf-never-existed');
-    expect(ghost).toBeNull();
+    // A named destination that collapsed (it was empty and its branch
+    // pruned away) falls back to the first surviving empty pane.
+    const collapse = deepDoc(0.5, 0.5);
+    collapse.leaves.a.tiles.push(tile('only'));
+    const intoEmpty = splitLeaf(collapse.doc, collapse.leaves.a.id, 'row').doc;
+    // The fresh pane is empty; moving the only tile there empties A, so
+    // the whole tree collapses to one empty pane that receives the tile.
+    const freshPane = leafNodes(intoEmpty.root).find((leaf) => leaf.id !== collapse.leaves.a.id)!;
+    const landed = moveTile(intoEmpty, 'only', freshPane.id);
+    expect(landed).not.toBeNull();
+    expect(leafOfTile(landed!.root, 'only')).not.toBeNull();
+
+    // With no empty pane anywhere, a vanished destination is refused
+    // rather than dumping the tile into unrelated content.
+    const full = deepDoc(0.5, 0.5);
+    full.leaves.a.tiles.push(tile('t-a'));
+    full.leaves.b.tiles.push(tile('t-b'));
+    full.leaves.c.tiles.push(tile('t-c'));
+    expect(moveTile(full.doc, 't-a', 'leaf-never-existed')).toBeNull();
 
     // Moving an absent tile is refused too.
     expect(moveTile(initial.doc, 'nope', initial.leaves.c.id)).toBeNull();
@@ -265,13 +281,13 @@ describe('canvas split tree', () => {
     const ids = new Set(Array.from({ length: 200 }, () => freshId('node')));
     expect(ids.size).toBe(200);
   });
-
   it('clones deeply so mutations never leak between versions', () => {
     const doc = deepDoc(0.5, 0.5).doc;
     const copy = cloneDoc(doc);
-    copy.root.kind === 'split' ? ((copy.root as { ratio: number }).ratio = 0.8) : undefined;
+    if (copy.root.kind === 'split') {
+      copy.root.ratio = 0.8;
+    }
     expect((doc.root as { ratio: number }).ratio).toBe(0.5);
-
     // Opening a tile leaves the original doc untouched.
     const opened = openTile(doc, tile('t9'));
     expect(leafNodes(opened.root)[0]!.tiles).toHaveLength(1);

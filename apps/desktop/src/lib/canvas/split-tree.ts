@@ -321,10 +321,11 @@ export function splitLeaf(
 
 /**
  * Moves a tile into another leaf (or reorders it within its own leaf).
- * Removal empties collapse exactly like closeTile, except when the emptied
- * leaf is itself the destination's neighborhood - the move then lands in
- * the surviving structure. Returns the updated doc, or `null` when either
- * the tile or the destination vanished mid-operation.
+ * Removal empties collapse exactly like closeTile; when the destination
+ * pane itself collapsed away (it was empty and its neighborhood pruned),
+ * the tile lands in the first surviving empty pane so the gesture always
+ * stays meaningful. Returns the updated doc, or `null` when the tile is
+ * absent or no empty pane remains to receive it.
  */
 export function moveTile(
   doc: CanvasDoc,
@@ -336,24 +337,21 @@ export function moveTile(
   if (tile === null) {
     return null;
   }
-  const sameLeaf = leafOfTile(doc.root, tileId)?.id === targetLeafId;
 
   const removed = closeTile(doc, tileId);
   if (removed === null) {
     return null;
   }
-
   const next = cloneDoc(removed);
+
   let destination = findLeaf(next.root, targetLeafId);
   if (destination === null) {
-    if (!sameLeaf) {
-      // The removal collapsed the destination subtree; refuse rather than
-      // guess where the user wanted the tile.
+    // The removal collapsed the named pane (and possibly its whole empty
+    // branch). The nearest equivalent surface is the first empty pane.
+    destination = leafNodes(next.root).find((leaf) => leaf.tiles.length === 0) ?? null;
+    if (destination === null) {
       return null;
     }
-    // Same-leaf reorder whose leaf collapsed cannot happen (it had >=2
-    // tiles), but guard anyway by reopening into the first leaf.
-    destination = firstLeaf(next.root);
   }
   const insertAt = Math.max(
     0,
