@@ -1,29 +1,18 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useMutation } from '@tanstack/react-query';
+import { useEffect, useState, type ReactNode } from 'react';
+
 import { Button } from '../components/Button';
 import { Dialog } from '../components/Dialog';
 import { describeError } from '../components/RouteErrorFallback';
+import { connectionManager } from '../lib/host/production-connection';
+import {
+  selectMethodLabel,
+  supportLabel,
+  useConnectionStore,
+  type ConnectionPhase,
+} from '../lib/host/connection-store';
+import { formatUptimeSeconds, uptimeSecondsFrom } from '../lib/host/uptime';
 import { invokeCommand } from '../lib/tauri';
-
-interface Capability {
-  name: string;
-  enabled: boolean;
-}
-
-interface NegotiatedMethod {
-  name: string;
-  version: string | null;
-  fallback: string | null;
-}
-
-interface HostStatus {
-  connected: boolean;
-  hostVersion: string | null;
-  servingStatus: string | null;
-  capabilities: Capability[];
-  methods: NegotiatedMethod[];
-  error: string | null;
-}
 
 interface ActionResult {
   ok: boolean;
@@ -37,34 +26,43 @@ interface DoctorResult {
   error?: string | null;
 }
 
-const POLL_INTERVAL_MS = 3000;
+const PHASE_PILLS: Record<ConnectionPhase, { label: string; className: string }> = {
+  disconnected: { label: 'Disconnected', className: 'pill pill-stopped' },
+  connecting: { label: 'Connecting...', className: 'pill pill-connecting' },
+  authenticated: { label: 'Connected', className: 'pill pill-running' },
+  reconnecting: { label: 'Reconnecting...', className: 'pill pill-connecting' },
+  'auth-failed': { label: 'Auth failed', className: 'pill pill-error' },
+  degraded: { label: 'Degraded (not serving)', className: 'pill pill-degraded' },
+};
 
-function methodLabel(method: NegotiatedMethod): string {
-  if (method.version) {
-    return `${method.name}=${method.version}`;
-  }
-  if (method.fallback) {
-    return `${method.name}=>${method.fallback} (fallback)`;
-  }
-  return `${method.name}=unavailable`;
+function PhasePill(): ReactNode {
+  const phase = useConnectionStore((state) => state.phase);
+  const pill = PHASE_PILLS[phase];
+  return (
+    <span className={pill.className} data-phase={phase}>
+      {pill.label}
+    </span>
+  );
 }
 
-function derivePill(
-  status: HostStatus | undefined,
-  isPending: boolean,
-): { label: string; className: string } {
-  if (!status) {
-    return isPending
-      ? { label: 'Connecting...', className: 'pill pill-connecting' }
-      : { label: 'Error', className: 'pill pill-error' };
-  }
-  if (status.connected) {
-    if (status.servingStatus === null || status.servingStatus === 'SERVING') {
-      return { label: 'Running', className: 'pill pill-running' };
+function UptimeCell(): ReactNode {
+  const startedAtUnixMs = useConnectionStore((state) => state.startedAtUnixMs);
+  const [nowUnixMs, setNowUnixMs] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (startedAtUnixMs === null) {
+      return;
     }
-    return { label: `Degraded (${status.servingStatus})`, className: 'pill pill-degraded' };
+    const handle = window.setInterval(() => setNowUnixMs(Date.now()), 1000);
+    return () => window.clearInterval(handle);
+  }, [startedAtUnixMs]);
+
+  const seconds = uptimeSecondsFrom(startedAtUnixMs, nowUnixMs);
+  if (seconds === null) {
+    // Hosts older than the v1.1 getInfo contract do not report a stamp.
+    return <span className="muted">unknown</span>;
   }
-  return { label: 'Stopped', className: 'pill pill-stopped' };
+  return <span>{formatUptimeSeconds(seconds)}</span>;
 }
 
 function ReportValue({ value }: { value: unknown }) {
@@ -101,115 +99,140 @@ function ReportValue({ value }: { value: unknown }) {
 }
 
 export default function HostStatusScreen() {
-  const queryClient = useQueryClient();
   const [actionError, setActionError] = useState<string | null>(null);
   const [doctorOpen, setDoctorOpen] = useState(false);
 
-  const statusQuery = useQuery({
-    queryKey: ['host', 'status'],
-    queryFn: () => invokeCommand<HostStatus>('host_status'),
-    refetchInterval: POLL_INTERVAL_MS,
-  });
+  const phase = useConnectionStore((state) => state.phase);
+  const lastErrorCode = useConnectionStore((state) => state.lastErrorCode);
+  const lastErrorMessage = useConnectionStore((state) => state.lastErrorMessage);
+  const hostVersion = useConnectionStore((state) => state.hostVersion);
+  const servingStatus = useConnectionStore((state) => state.servingStatus);
+  const capabilities = useConnectionStore((state) => state.capabilities);
+  const methods = useConnectionStore((state) => state.methods);
+  const outageId = useConnectionStore((state) => state.outageId);
+  const liveSequence = useConnectionStore((state) => state.liveSequence);
+  const reconnectAttempt = useConnectionStore((state) => state.reconnectAttempt);
 
   const lifecycleMutation = useMutation({
-    mutationFn: (command: 'host_start' | 'host_stop') => invokeCommand<ActionResult>(command),
-    onSuccess: (result) => {
+    mutationFn: async (command: 'host_start' | 'host_stop') => {
+      const result = await invokeCommand<ActionResult>(command);
       if (!result.ok) {
-        setActionError(result.error ?? result.detail ?? 'Command failed.');
+        throw new Error(result.error ?? result.detail ?? 'Command failed.');
+      }
+      return result;
+    },
+    onSuccess: async (_result, command) => {
+      setActionError(null);
+      // Nudge the manager so the surface recovers without waiting out the
+      // backoff window after an explicit start.
+      if (command === 'host_start') {
+        await connectionManager.retryNow();
       }
     },
     onError: (error) => setActionError(describeError(error)),
-    onSettled: () => void queryClient.invalidateQueries({ queryKey: ['host'] }),
   });
 
   const doctorMutation = useMutation({
     mutationFn: () => invokeCommand<DoctorResult>('host_doctor'),
   });
 
-  const status = statusQuery.data;
   const busy = lifecycleMutation.isPending;
-  const pill = derivePill(status, statusQuery.isPending);
   const doctor = doctorMutation.data;
+  const connected = phase === 'authenticated' || phase === 'degraded';
 
   return (
     <main className="shell">
       <h1>Lazarus</h1>
       <p>Local-first, multi-agent, spec-driven engineering platform.</p>
 
-      <section className="host-status" aria-live="polite" aria-busy={statusQuery.isFetching}>
+      <section className="host-status" aria-live="polite">
         <div className="status-header">
-          <span className={pill.className}>{pill.label}</span>
+          <PhasePill />
+          {phase === 'reconnecting' || phase === 'auth-failed' ? (
+            <span className="muted">attempt {reconnectAttempt}</span>
+          ) : null}
         </div>
 
+        {lastErrorMessage !== null && !connected ? (
+          <p role="alert" className="error" data-error-code={lastErrorCode ?? undefined}>
+            {lastErrorCode !== null ? `[${lastErrorCode}] ` : ''}
+            {lastErrorMessage}
+          </p>
+        ) : null}
         {actionError ? (
           <p role="alert" className="error">
             {actionError}
           </p>
         ) : null}
 
-        {statusQuery.isError ? (
+        <dl className="status-grid">
+          <dt>Host version</dt>
+          <dd>{hostVersion ?? '-'}</dd>
+          <dt>Serving status</dt>
+          <dd>{servingStatus ?? '-'}</dd>
+          <dt>Uptime</dt>
+          <dd>
+            <UptimeCell />
+          </dd>
+          <dt>Event stream</dt>
+          <dd>
+            {outageId === null ? (
+              <span className="muted">not subscribed</span>
+            ) : (
+              <span>
+                live{liveSequence !== null ? ` (seq ${liveSequence})` : ''} - incarnation{' '}
+                <code>{outageId}</code>
+              </span>
+            )}
+          </dd>
+        </dl>
+
+        {methods.length > 0 ? (
           <>
-            <p role="alert" className="error">
-              {describeError(statusQuery.error)}
-            </p>
-            <Button onClick={() => void statusQuery.refetch()}>Retry</Button>
+            <h2>Negotiated methods</h2>
+            <ul className="capability-list" aria-label="Negotiated protocol methods">
+              {methods.map((method) => (
+                <li key={method.name}>
+                  <code>{method.name}</code> - {selectMethodLabel(method)} (
+                  {supportLabel(method.support)})
+                </li>
+              ))}
+            </ul>
           </>
         ) : null}
 
-        {status && status.connected ? (
+        {connected && capabilities.length > 0 ? (
           <>
-            <dl className="status-grid">
-              <dt>Connection</dt>
-              <dd>connected</dd>
-              <dt>Host version</dt>
-              <dd>{status.hostVersion ?? 'unknown'}</dd>
-              <dt>Serving status</dt>
-              <dd>{status.servingStatus ?? 'unknown'}</dd>
-            </dl>
-            {status.methods.length > 0 ? (
-              <>
-                <h2>Negotiated methods</h2>
-                <ul className="capability-list" aria-label="Negotiated protocol methods">
-                  {status.methods.map((method) => (
-                    <li key={method.name}>
-                      <code>{method.name}</code> - {methodLabel(method)}
-                    </li>
-                  ))}
-                </ul>
-              </>
-            ) : null}
-            {status.capabilities.length > 0 ? (
-              <>
-                <h2>Capabilities</h2>
-                <ul className="capability-list">
-                  {status.capabilities.map((capability) => (
-                    <li key={capability.name}>
-                      <code>{capability.name}</code> - {capability.enabled ? 'enabled' : 'disabled'}
-                    </li>
-                  ))}
-                </ul>
-              </>
-            ) : (
-              <p className="muted">No negotiated capabilities.</p>
-            )}
+            <h2>Capabilities</h2>
+            <ul className="capability-list">
+              {capabilities.map((capability) => (
+                <li key={capability.name}>
+                  <code>{capability.name}</code> - {capability.enabled ? 'enabled' : 'disabled'}
+                </li>
+              ))}
+            </ul>
           </>
-        ) : status ? (
-          <p role="alert" className="error">
-            {status.error ?? 'Host is not running.'}
-          </p>
+        ) : null}
+
+        {!connected && (phase === 'reconnecting' || phase === 'auth-failed') ? (
+          <div className="actions">
+            <Button variant="primary" onClick={() => void connectionManager.retryNow()}>
+              Retry now
+            </Button>
+          </div>
         ) : null}
 
         <div className="actions">
           <Button
             variant="primary"
-            disabled={busy || (status?.connected ?? false)}
+            disabled={busy || connected}
             onClick={() => lifecycleMutation.mutate('host_start')}
           >
             Start Host
           </Button>
           <Button
             variant="danger"
-            disabled={busy || !status?.connected}
+            disabled={busy || !connected}
             onClick={() => lifecycleMutation.mutate('host_stop')}
           >
             Stop Host
@@ -222,9 +245,6 @@ export default function HostStatusScreen() {
             }}
           >
             Run Doctor
-          </Button>
-          <Button disabled={busy} onClick={() => void statusQuery.refetch()}>
-            Refresh
           </Button>
         </div>
       </section>
