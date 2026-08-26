@@ -23,7 +23,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 /// Highest migration version this binary knows how to reach. A database from
 /// a newer Host must refuse to open rather than be silently misread.
-pub const CURRENT_SCHEMA_VERSION: i64 = 3;
+pub const CURRENT_SCHEMA_VERSION: i64 = 4;
 
 /// How long a writer waits for a competing local writer before giving up.
 const BUSY_TIMEOUT_MS: u64 = 5_000;
@@ -108,6 +108,22 @@ pub const MIGRATIONS: &[Migration] = &[
             "ALTER TABLE supervised_processes ADD COLUMN data_dir TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE supervised_processes ADD COLUMN env_allowlist_json TEXT",
         ],
+    },
+    Migration {
+        version: 4,
+        name: "add_task_layouts",
+        // Durable per-Task layout records for the Desktop shell (Phase 3.4).
+        // The Host stores the document opaquely: `layout_json` must be a
+        // JSON object by handler policy, but its internal schema belongs to
+        // the client, so no structure is enforced here. Revisions start at
+        // 1 and only ever increase; the optimistic-concurrency guard lives
+        // in `put_task_layout`.
+        statements: &["CREATE TABLE IF NOT EXISTS task_layouts (
+            task_id TEXT PRIMARY KEY,
+            layout_json TEXT NOT NULL,
+            revision INTEGER NOT NULL CHECK (revision >= 1),
+            updated_at_utc TEXT NOT NULL
+        ) STRICT"],
     },
 ];
 
@@ -227,6 +243,15 @@ pub struct StoredOutputFrame {
     pub seq: u64,
     pub stream: String,
     pub payload: Vec<u8>,
+}
+
+/// One durable per-Task layout record: the opaque shell-state document the
+/// Desktop persists and restores verbatim.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredTaskLayout {
+    pub task_id: String,
+    pub layout_json: String,
+    pub revision: u64,
 }
 
 /// Durable output replay starting at a caller-supplied monotonic offset.
@@ -610,6 +635,86 @@ impl Store {
             next_offset,
             truncated: dropped_bytes != 0 && offset < oldest_retained,
         }))
+    }
+
+    /// Reads one durable per-Task layout record. Returns `None` when the
+    /// task has no layout yet; callers treat that as revision zero.
+    pub fn task_layout(&self, task_id: &str) -> Result<Option<StoredTaskLayout>, PersistenceError> {
+        self.conn
+            .query_row(
+                "SELECT task_id, layout_json, revision FROM task_layouts WHERE task_id = ?1",
+                [task_id],
+                |row| {
+                    Ok(StoredTaskLayout {
+                        task_id: row.get(0)?,
+                        layout_json: row.get(1)?,
+                        revision: row.get::<_, i64>(2)?.max(0) as u64,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|source| PersistenceError::Sqlite {
+                context: "reading task layout",
+                source,
+            })
+    }
+
+    /// Writes one durable per-Task layout document. When `expected_revision`
+    /// is supplied, the write applies only against that current revision;
+    /// a mismatch is an optimistic-concurrency conflict. Returns the new
+    /// revision, or `None` when the guard rejected the write.
+    pub fn put_task_layout(
+        &mut self,
+        task_id: &str,
+        layout_json: &str,
+        expected_revision: Option<u64>,
+    ) -> Result<Option<u64>, PersistenceError> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|source| sqlite_error("beginning task layout put", source))?;
+        let current: Option<i64> = tx
+            .query_row(
+                "SELECT revision FROM task_layouts WHERE task_id = ?1",
+                [task_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|source| PersistenceError::Sqlite {
+                context: "reading current task layout revision",
+                source,
+            })?;
+        let next_revision = match (current, expected_revision) {
+            // Fresh insert with no guard: revision 1.
+            (None, None) => 1,
+            // Guarded write against a record that does not exist: conflict.
+            (None, Some(_)) => return Ok(None),
+            // Unguarded overwrite: always the next revision.
+            (Some(current), None) => current.saturating_add(1).max(1),
+            // Guarded overwrite: only the exact current revision wins.
+            (Some(current), Some(expected)) => {
+                if expected != current.max(0) as u64 {
+                    return Ok(None);
+                }
+                current.saturating_add(1).max(1)
+            }
+        };
+        tx.execute(
+            "INSERT INTO task_layouts (task_id, layout_json, revision, updated_at_utc)
+             VALUES (?1, ?2, ?3, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+             ON CONFLICT(task_id) DO UPDATE SET
+                 layout_json = excluded.layout_json,
+                 revision = excluded.revision,
+                 updated_at_utc = excluded.updated_at_utc",
+            params![task_id, layout_json, next_revision],
+        )
+        .map_err(|source| PersistenceError::Sqlite {
+            context: "writing task layout",
+            source,
+        })?;
+        tx.commit()
+            .map_err(|source| sqlite_error("committing task layout put", source))?;
+        Ok(Some(next_revision.max(0) as u64))
     }
 
     /// Lists durable process state in startup order.
@@ -1246,6 +1351,87 @@ mod tests {
     }
 
     #[test]
+    fn task_layout_records_round_trip_with_monotonic_revisions() {
+        let mut store = Store::open_in_memory().expect("store");
+        assert!(
+            store
+                .task_layout("0198e550-c9be-7000-8000-000000000010")
+                .unwrap()
+                .is_none(),
+            "a fresh task has no layout record"
+        );
+
+        // Unguarded first write lands at revision 1.
+        assert_eq!(
+            store.put_task_layout("t1", r#"{"v":1}"#, None).unwrap(),
+            Some(1)
+        );
+        // Guarded write against the current revision advances it.
+        assert_eq!(
+            store.put_task_layout("t1", r#"{"v":2}"#, Some(1)).unwrap(),
+            Some(2)
+        );
+        // A stale guard is a conflict, not a silent overwrite.
+        assert_eq!(
+            store.put_task_layout("t1", r#"{"v":3}"#, Some(1)).unwrap(),
+            None
+        );
+        // A guard against a nonexistent record can never match.
+        assert_eq!(
+            store.put_task_layout("missing", "{}", Some(4)).unwrap(),
+            None
+        );
+        // An unguarded overwrite keeps climbing from the stored revision.
+        assert_eq!(
+            store.put_task_layout("t1", r#"{"v":4}"#, None).unwrap(),
+            Some(3)
+        );
+
+        let stored = store.task_layout("t1").unwrap().expect("record");
+        assert_eq!(
+            stored,
+            StoredTaskLayout {
+                task_id: "t1".to_owned(),
+                layout_json: r#"{"v":4}"#.to_owned(),
+                revision: 3,
+            }
+        );
+        // Records for different tasks never interfere.
+        assert_eq!(store.task_layout("missing").unwrap(), None);
+        assert_eq!(
+            store.put_task_layout("t2", "{}", None).unwrap(),
+            Some(1),
+            "a second task starts its own revision sequence"
+        );
+        assert_eq!(store.task_layout("t1").unwrap().expect("t1").revision, 3);
+    }
+
+    #[test]
+    fn task_layout_records_survive_a_full_restart_cycle() {
+        let path = temp_db_path("task-layouts");
+        {
+            let mut store = Store::open(&path).expect("first boot");
+            store
+                .put_task_layout("t1", r#"{"split":"row"}"#, None)
+                .expect("put");
+        }
+        {
+            let mut store = Store::open(&path).expect("second boot");
+            let stored = store.task_layout("t1").expect("read").expect("survives");
+            assert_eq!(stored.layout_json, r#"{"split":"row"}"#);
+            assert_eq!(stored.revision, 1);
+            assert_eq!(
+                store
+                    .put_task_layout("t1", r#"{"split":"column"}"#, Some(1))
+                    .unwrap(),
+                Some(2),
+                "the revision guard works across restarts"
+            );
+        }
+        cleanup(&path);
+    }
+
+    #[test]
     fn wal_and_foreign_key_pragmas_are_active_on_file_backed_stores() {
         let path = temp_db_path("pragmas");
         let store = Store::open(&path).expect("file-backed store");
@@ -1418,7 +1604,10 @@ mod tests {
         }
 
         let store = Store::open(&path).expect("upgrade v2 database");
-        assert_eq!(store.schema_version().expect("version"), 3);
+        assert_eq!(
+            store.schema_version().expect("version"),
+            CURRENT_SCHEMA_VERSION
+        );
         let spec = store
             .supervised_process_spec("0198e550-c9be-7000-8000-000000000008")
             .expect("read upgraded row")

@@ -65,7 +65,8 @@ async fn main() -> Result<()> {
         token,
         store.clone(),
         supervisor.clone(),
-    );
+    )
+    .with_task_layouts(store.clone());
     let app = build_router(services);
 
     info!(

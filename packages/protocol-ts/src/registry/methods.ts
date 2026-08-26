@@ -24,7 +24,14 @@ import {
 } from './schemas/system.ts';
 import { EventFrameSchema } from './schemas/system.ts';
 import { ListWorkspacesRequestSchema, ListWorkspacesResponseSchema } from './schemas/workspace.ts';
-import { ListTasksRequestSchema, ListTasksResponseSchema } from './schemas/task.ts';
+import {
+  GetTaskLayoutRequestSchema,
+  GetTaskLayoutResponseSchema,
+  ListTasksRequestSchema,
+  ListTasksResponseSchema,
+  PutTaskLayoutRequestSchema,
+  PutTaskLayoutResponseSchema,
+} from './schemas/task.ts';
 
 /**
  * The RPC surface. Every entry carries its own `{major, minor}`
@@ -72,6 +79,24 @@ export const METHODS: readonly MethodDefinition[] = [
     request: ListTasksRequestSchema,
     response: ListTasksResponseSchema,
     optional: false,
+  },
+  {
+    // Optional: peers without layout persistence degrade to session-only
+    // shell state instead of failing unrelated RPCs (plan 9.2).
+    name: 'task.layout.get',
+    kind: 'unary',
+    version: { major: 1, minor: 0 },
+    request: GetTaskLayoutRequestSchema,
+    response: GetTaskLayoutResponseSchema,
+    optional: true,
+  },
+  {
+    name: 'task.layout.put',
+    kind: 'unary',
+    version: { major: 1, minor: 0 },
+    request: PutTaskLayoutRequestSchema,
+    response: PutTaskLayoutResponseSchema,
+    optional: true,
   },
   {
     name: 'process.start',

@@ -53,6 +53,14 @@
       "request": {},
       "response": { "type": "outage", "outageId": "lazarus" }
     },
+    "task.layout.get": {
+      "request": { "taskId": "lazarus" },
+      "response": { "taskId": "lazarus", "revision": 0 }
+    },
+    "task.layout.put": {
+      "request": { "taskId": "lazarus", "layoutJson": "lazarus" },
+      "response": { "taskId": "lazarus", "revision": 1 }
+    },
     "task.list": { "request": {}, "response": { "tasks": [] } },
     "workspace.list": { "request": {}, "response": { "workspaces": [] } }
   }

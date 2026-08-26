@@ -63,6 +63,10 @@ pub struct HostServices {
     state: Arc<HostState>,
     token: Arc<str>,
     processes: Option<Arc<ProcessServices>>,
+    /// Durable store backing the `task.layout.*` routes; configured
+    /// independently from process supervision so either subsystem can be
+    /// wired without implying the other.
+    layouts: Option<Arc<Mutex<Store>>>,
 }
 
 struct ProcessServices {
@@ -76,6 +80,7 @@ impl HostServices {
             state,
             token,
             processes: None,
+            layouts: None,
         }
     }
 
@@ -90,11 +95,18 @@ impl HostServices {
             state,
             token,
             processes: Some(Arc::new(ProcessServices { store, supervisor })),
+            layouts: None,
         }
+    }
+
+    /// Adds the durable store used by the `task.layout.*` routes.
+    pub fn with_task_layouts(mut self, store: Arc<Mutex<Store>>) -> Self {
+        self.layouts = Some(store);
+        self
     }
 }
 
-/// The stable error code carried in every typed JSON error body.
+/// Stable error code carried in every typed JSON error body.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GateCode {
     AlreadyExists,
@@ -103,6 +115,7 @@ pub enum GateCode {
     IncompatibleMethodManifest,
     DeadlineExceeded,
     NotFound,
+    FailedPrecondition,
     Internal,
 }
 
@@ -117,6 +130,7 @@ impl GateCode {
             Self::IncompatibleMethodManifest => wire::ProtocolErrorCode::IncompatibleMethodManifest,
             Self::DeadlineExceeded => wire::ProtocolErrorCode::DeadlineExceeded,
             Self::NotFound => wire::ProtocolErrorCode::NotFound,
+            Self::FailedPrecondition => wire::ProtocolErrorCode::FailedPrecondition,
             Self::Internal => wire::ProtocolErrorCode::Internal,
         }
     }
@@ -129,6 +143,9 @@ impl GateCode {
             Self::IncompatibleMethodManifest => StatusCode::PRECONDITION_FAILED,
             Self::DeadlineExceeded => StatusCode::GATEWAY_TIMEOUT,
             Self::NotFound => StatusCode::NOT_FOUND,
+            // Optimistic-concurrency conflicts are retryable after a reload;
+            // 409 names the collision without implying the resource is gone.
+            Self::FailedPrecondition => StatusCode::CONFLICT,
             Self::Internal => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -184,6 +201,8 @@ fn rpc_method(path: &str) -> Option<&'static str> {
         "/system/shutdown" => Some("system.shutdown"),
         "/workspaces" => Some("workspace.list"),
         "/tasks" => Some("task.list"),
+        "/task/layout" => Some("task.layout.get"),
+        "/task/layout/save" => Some("task.layout.put"),
         "/process/start" => Some("process.start"),
         "/process/stop" => Some("process.stop"),
         "/process/list" => Some("process.list"),
@@ -466,6 +485,90 @@ fn process_runtime(services: &HostServices) -> Result<Arc<ProcessServices>, Gate
             "process supervision is not configured for this Host",
         )
     })
+}
+
+fn layout_store(services: &HostServices) -> Result<Arc<Mutex<Store>>, GateError> {
+    services.layouts.clone().ok_or_else(|| {
+        GateError::new(
+            GateCode::Internal,
+            "task layout persistence is not configured for this Host",
+        )
+    })
+}
+
+fn lock_layout_store(
+    store: &Arc<Mutex<Store>>,
+) -> Result<std::sync::MutexGuard<'_, Store>, GateError> {
+    store
+        .lock()
+        .map_err(|_| GateError::new(GateCode::Internal, "layout persistence lock is poisoned"))
+}
+
+/// `GET /task/layout`: reads one durable per-Task layout record. A task with
+/// no record answers revision zero without a document rather than a 404, so
+/// clients can distinguish "empty" from "unknown route" and always learn the
+/// current revision before their first guarded write.
+async fn get_task_layout(
+    State(services): State<HostServices>,
+    query: Result<Query<wire::TaskLayoutGetRequest>, QueryRejection>,
+) -> Result<Json<wire::TaskLayoutGetResponse>, GateError> {
+    let Query(request) = query
+        .map_err(|_| GateError::new(GateCode::InvalidArgument, "query parameters are malformed"))?;
+    request.validate().map_err(|reason| {
+        GateError::new(
+            GateCode::InvalidArgument,
+            format!("request violates the method contract: {reason}"),
+        )
+    })?;
+    let store = layout_store(&services)?;
+    let stored = lock_layout_store(&store)?
+        .task_layout(&request.task_id)
+        .map_err(process_persistence_error)?;
+    Ok(Json(wire::TaskLayoutGetResponse {
+        task_id: request.task_id,
+        layout_json: stored.as_ref().map(|layout| layout.layout_json.clone()),
+        revision: stored.as_ref().map_or(0, |layout| layout.revision),
+    }))
+}
+
+/// `POST /task/layout/save`: writes one durable per-Task layout document.
+/// The Host persists the payload opaquely but refuses non-JSON-object
+/// bodies so corruption cannot enter the record; the optional
+/// `expectedRevision` guard turns concurrent writers into a typed
+/// FAILED_PRECONDITION instead of a lost update.
+async fn put_task_layout(
+    State(services): State<HostServices>,
+    payload: Result<Json<wire::TaskLayoutPutRequest>, JsonRejection>,
+) -> Result<Json<wire::TaskLayoutPutResponse>, GateError> {
+    let Json(request) =
+        payload.map_err(|_| GateError::new(GateCode::InvalidArgument, "JSON body is malformed"))?;
+    request.validate().map_err(invalid_process_request)?;
+    let document: serde_json::Value = serde_json::from_str(&request.layout_json)
+        .map_err(|_| invalid_process_request("layoutJson must be a serialized JSON object"))?;
+    if !document.is_object() {
+        return Err(invalid_process_request("layoutJson must be a JSON object"));
+    }
+
+    let store = layout_store(&services)?;
+    let outcome = lock_layout_store(&store)?.put_task_layout(
+        &request.task_id,
+        &request.layout_json,
+        request.expected_revision,
+    );
+    match outcome {
+        Ok(Some(revision)) => Ok(Json(wire::TaskLayoutPutResponse {
+            task_id: request.task_id,
+            revision,
+        })),
+        Ok(None) => Err(GateError::new(
+            GateCode::FailedPrecondition,
+            format!(
+                "layout write for task {} conflicts with the current record; reload and retry",
+                request.task_id
+            ),
+        )),
+        Err(error) => Err(process_persistence_error(error)),
+    }
 }
 
 fn process_persistence_error(error: PersistenceError) -> GateError {
@@ -1098,6 +1201,8 @@ pub fn build_router(services: HostServices) -> Router {
         .route("/system/shutdown", post(system_shutdown))
         .route("/workspaces", get(list_workspaces))
         .route("/tasks", get(list_tasks))
+        .route("/task/layout", get(get_task_layout))
+        .route("/task/layout/save", post(put_task_layout))
         .route("/process/start", post(start_process))
         .route("/process/stop", post(stop_process))
         .route("/process/list", get(list_processes))
@@ -1311,6 +1416,136 @@ mod tests {
                 "retryable": false,
             })
         );
+    }
+
+    /// The Phase 3.4 layout surface: an unknown task reads as the empty
+    /// record (revision zero, no document), puts advance revisions, guarded
+    /// writes conflict as typed FAILED_PRECONDITION, and non-object
+    /// documents are rejected before touching persistence.
+    #[tokio::test]
+    async fn task_layout_routes_round_trip_guard_and_validate() {
+        let services = HostServices::new(Arc::new(HostState::new()), Arc::from(TOKEN))
+            .with_task_layouts(Arc::new(Mutex::new(
+                Store::open_in_memory().expect("layout store"),
+            )));
+
+        // Unknown task: empty record, not a 404.
+        let empty = get_task_layout(
+            State(services.clone()),
+            Ok(Query(wire::TaskLayoutGetRequest {
+                task_id: "task-a".to_owned(),
+            })),
+        )
+        .await
+        .expect("empty read");
+        assert_eq!(empty.revision, 0);
+        assert_eq!(empty.layout_json, None);
+
+        // First put lands at revision 1 and is readable back.
+        let put = put_task_layout(
+            State(services.clone()),
+            Ok(Json(wire::TaskLayoutPutRequest {
+                task_id: "task-a".to_owned(),
+                layout_json: r#"{"version":1,"root":{"kind":"leaf"}}"#.to_owned(),
+                expected_revision: None,
+            })),
+        )
+        .await
+        .expect("first put");
+        assert_eq!(put.revision, 1);
+        let stored = get_task_layout(
+            State(services.clone()),
+            Ok(Query(wire::TaskLayoutGetRequest {
+                task_id: "task-a".to_owned(),
+            })),
+        )
+        .await
+        .expect("read back");
+        assert_eq!(stored.revision, 1);
+        assert_eq!(
+            stored.layout_json.as_deref(),
+            Some(r#"{"version":1,"root":{"kind":"leaf"}}"#)
+        );
+
+        // Guarded write with the current revision advances; a stale guard
+        // conflicts without corrupting anything.
+        let advanced = put_task_layout(
+            State(services.clone()),
+            Ok(Json(wire::TaskLayoutPutRequest {
+                task_id: "task-a".to_owned(),
+                layout_json: r#"{"version":1}"#.to_owned(),
+                expected_revision: Some(1),
+            })),
+        )
+        .await
+        .expect("guarded put");
+        assert_eq!(advanced.revision, 2);
+        let conflict = put_task_layout(
+            State(services.clone()),
+            Ok(Json(wire::TaskLayoutPutRequest {
+                task_id: "task-a".to_owned(),
+                layout_json: r#"{"version":9}"#.to_owned(),
+                expected_revision: Some(1),
+            })),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(conflict.code, GateCode::FailedPrecondition);
+        assert_eq!(conflict.code.status(), StatusCode::CONFLICT);
+
+        // Non-object documents never reach persistence.
+        for bad in ["[]", "\"text\"", "42"] {
+            let rejected = put_task_layout(
+                State(services.clone()),
+                Ok(Json(wire::TaskLayoutPutRequest {
+                    task_id: "task-b".to_owned(),
+                    layout_json: bad.to_owned(),
+                    expected_revision: None,
+                })),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(rejected.code, GateCode::InvalidArgument, "{bad}");
+        }
+        assert!(
+            get_task_layout(
+                State(services.clone()),
+                Ok(Query(wire::TaskLayoutGetRequest {
+                    task_id: "task-b".to_owned(),
+                })),
+            )
+            .await
+            .expect("untouched")
+            .layout_json
+            .is_none(),
+            "rejected writes must leave no record"
+        );
+    }
+
+    #[tokio::test]
+    async fn layout_routes_without_a_configured_store_fail_closed() {
+        let services = HostServices::new(Arc::new(HostState::new()), Arc::from(TOKEN));
+        let error = get_task_layout(
+            State(services.clone()),
+            Ok(Query(wire::TaskLayoutGetRequest {
+                task_id: "task-a".to_owned(),
+            })),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, GateCode::Internal);
+
+        let error = put_task_layout(
+            State(services),
+            Ok(Json(wire::TaskLayoutPutRequest {
+                task_id: "task-a".to_owned(),
+                layout_json: "{}".to_owned(),
+                expected_revision: None,
+            })),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, GateCode::Internal);
     }
 
     #[test]

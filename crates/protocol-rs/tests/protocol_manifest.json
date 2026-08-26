@@ -1,5 +1,5 @@
 {
-  "manifestFingerprint": "3199f66f3dc07c1384d5003cb278325aa9ddb8bad856a3798c66c0f14d6531f4",
+  "manifestFingerprint": "cca73a015bd41409b33c3c3c052f9589992f9d9c48c0c811f4ccd009f49d6af8",
   "methods": [
     {
       "name": "process.list",
@@ -82,6 +82,26 @@
       "responseFingerprint": "da7f478a78a2588a466b3af3e61c6e00a8259e4fc31ec3a5f655525fb97e728e"
     },
     {
+      "name": "task.layout.get",
+      "kind": "unary",
+      "major": 1,
+      "minor": 0,
+      "optional": true,
+      "fallback": null,
+      "requestFingerprint": "bd1a9a2630e3f596c4dfac98c8e4d86beecf624aa53094f7f1afda7e06fae1a9",
+      "responseFingerprint": "68f38d30d1bae2270231be096120eb583e0f415ca4223959fe1e7aa1b442c015"
+    },
+    {
+      "name": "task.layout.put",
+      "kind": "unary",
+      "major": 1,
+      "minor": 0,
+      "optional": true,
+      "fallback": null,
+      "requestFingerprint": "4fa985b032ec932191315d5528296c0f86717d7ef3714cb6e134aedbc6ba994c",
+      "responseFingerprint": "f557aa212a3267c625e7d92914e46b3abaa4cd2766e66b475213aa0a9785b7fa"
+    },
+    {
       "name": "task.list",
       "kind": "unary",
       "major": 1,
@@ -111,6 +131,8 @@
     "system.getInfo",
     "system.health",
     "system.subscribeEvents",
+    "task.layout.get",
+    "task.layout.put",
     "task.list",
     "workspace.list"
   ],

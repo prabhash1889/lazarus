@@ -15,6 +15,8 @@ export const RELEASED_FLOOR: ReadonlyMap<string, MethodVersion> = new Map([
   ['system.subscribeEvents', { major: 1, minor: 0 }],
   ['workspace.list', { major: 1, minor: 0 }],
   ['task.list', { major: 1, minor: 0 }],
+  ['task.layout.get', { major: 1, minor: 0 }],
+  ['task.layout.put', { major: 1, minor: 0 }],
   ['process.start', { major: 1, minor: 0 }],
   ['process.stop', { major: 1, minor: 0 }],
   ['process.list', { major: 1, minor: 0 }],

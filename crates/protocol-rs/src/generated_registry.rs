@@ -43,7 +43,7 @@ pub struct MethodBinding {
 
 /// Manifest fingerprint over all method bindings (see header).
 pub const MANIFEST_FINGERPRINT: &str =
-    "3199f66f3dc07c1384d5003cb278325aa9ddb8bad856a3798c66c0f14d6531f4";
+    "cca73a015bd41409b33c3c3c052f9589992f9d9c48c0c811f4ccd009f49d6af8";
 
 /// Generated method bindings, sorted by name.
 pub const METHOD_BINDINGS: &[MethodBinding] = &[
@@ -128,6 +128,26 @@ pub const METHOD_BINDINGS: &[MethodBinding] = &[
         response_fingerprint: "da7f478a78a2588a466b3af3e61c6e00a8259e4fc31ec3a5f655525fb97e728e",
     },
     MethodBinding {
+        name: "task.layout.get",
+        kind: MethodKind::Unary,
+        major: 1,
+        minor: 0,
+        optional: true,
+        fallback: None,
+        request_fingerprint: "bd1a9a2630e3f596c4dfac98c8e4d86beecf624aa53094f7f1afda7e06fae1a9",
+        response_fingerprint: "68f38d30d1bae2270231be096120eb583e0f415ca4223959fe1e7aa1b442c015",
+    },
+    MethodBinding {
+        name: "task.layout.put",
+        kind: MethodKind::Unary,
+        major: 1,
+        minor: 0,
+        optional: true,
+        fallback: None,
+        request_fingerprint: "4fa985b032ec932191315d5528296c0f86717d7ef3714cb6e134aedbc6ba994c",
+        response_fingerprint: "f557aa212a3267c625e7d92914e46b3abaa4cd2766e66b475213aa0a9785b7fa",
+    },
+    MethodBinding {
         name: "task.list",
         kind: MethodKind::Unary,
         major: 1,
@@ -159,6 +179,8 @@ pub const RELEASED_FLOOR: &[&str] = &[
     "system.getInfo",
     "system.health",
     "system.subscribeEvents",
+    "task.layout.get",
+    "task.layout.put",
     "task.list",
     "workspace.list",
 ];
@@ -954,6 +976,125 @@ pub mod wire {
     }
 
     #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    pub struct TaskLayoutGetRequest {
+        #[serde(rename = "taskId")]
+        pub task_id: String,
+    }
+
+    impl TaskLayoutGetRequest {
+        /// Enforces exactly the constraints carried by the contract schema.
+        pub fn validate(&self) -> Result<(), String> {
+            let v = &self.task_id;
+            if v.is_empty() {
+                return Err("taskId: must be at least 1 characters".to_string());
+            }
+            if v.len() > 128 {
+                return Err("taskId: must be at most 128 characters".to_string());
+            }
+            Ok(())
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    pub struct TaskLayoutGetResponse {
+        #[serde(rename = "layoutJson", skip_serializing_if = "Option::is_none")]
+        pub layout_json: Option<String>,
+        pub revision: u64,
+        #[serde(rename = "taskId")]
+        pub task_id: String,
+    }
+
+    impl TaskLayoutGetResponse {
+        /// Enforces exactly the constraints carried by the contract schema.
+        pub fn validate(&self) -> Result<(), String> {
+            if self.layout_json.as_ref().is_some_and(|v| v.is_empty()) {
+                return Err("layoutJson: must be at least 1 characters".to_string());
+            }
+            if self.layout_json.as_ref().is_some_and(|v| v.len() > 262144) {
+                return Err("layoutJson: must be at most 262144 characters".to_string());
+            }
+            let v = &self.revision;
+            if *v > 9007199254740991 {
+                return Err("revision: must be at most 9007199254740991".to_string());
+            }
+            let v = &self.task_id;
+            if v.is_empty() {
+                return Err("taskId: must be at least 1 characters".to_string());
+            }
+            if v.len() > 128 {
+                return Err("taskId: must be at most 128 characters".to_string());
+            }
+            Ok(())
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    pub struct TaskLayoutPutRequest {
+        #[serde(rename = "expectedRevision", skip_serializing_if = "Option::is_none")]
+        pub expected_revision: Option<u64>,
+        #[serde(rename = "layoutJson")]
+        pub layout_json: String,
+        #[serde(rename = "taskId")]
+        pub task_id: String,
+    }
+
+    impl TaskLayoutPutRequest {
+        /// Enforces exactly the constraints carried by the contract schema.
+        pub fn validate(&self) -> Result<(), String> {
+            if self
+                .expected_revision
+                .as_ref()
+                .is_some_and(|v| *v > 9007199254740991)
+            {
+                return Err("expectedRevision: must be at most 9007199254740991".to_string());
+            }
+            let v = &self.layout_json;
+            if v.is_empty() {
+                return Err("layoutJson: must be at least 1 characters".to_string());
+            }
+            if v.len() > 262144 {
+                return Err("layoutJson: must be at most 262144 characters".to_string());
+            }
+            let v = &self.task_id;
+            if v.is_empty() {
+                return Err("taskId: must be at least 1 characters".to_string());
+            }
+            if v.len() > 128 {
+                return Err("taskId: must be at most 128 characters".to_string());
+            }
+            Ok(())
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    pub struct TaskLayoutPutResponse {
+        pub revision: u64,
+        #[serde(rename = "taskId")]
+        pub task_id: String,
+    }
+
+    impl TaskLayoutPutResponse {
+        /// Enforces exactly the constraints carried by the contract schema.
+        pub fn validate(&self) -> Result<(), String> {
+            let v = &self.revision;
+            if *v < 1 {
+                return Err("revision: must be at least 1".to_string());
+            }
+            if *v > 9007199254740991 {
+                return Err("revision: must be at most 9007199254740991".to_string());
+            }
+            let v = &self.task_id;
+            if v.is_empty() {
+                return Err("taskId: must be at least 1 characters".to_string());
+            }
+            if v.len() > 128 {
+                return Err("taskId: must be at most 128 characters".to_string());
+            }
+            Ok(())
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
     pub struct TaskListRequest {
         #[serde(skip_serializing_if = "Option::is_none")]
         pub cursor: Option<String>,
@@ -1310,6 +1451,54 @@ pub mod wire {
         decoded
             .validate()
             .map_err(|reason| WireDecodeError::new("system.subscribeEvents response", reason))?;
+        Ok(decoded)
+    }
+
+    /// Decodes and validates a `task.layout.get` request payload produced by any peer.
+    pub fn decode_task_layout_get_request(
+        value: &serde_json::Value,
+    ) -> Result<TaskLayoutGetRequest, WireDecodeError> {
+        let decoded: TaskLayoutGetRequest = serde_json::from_value(value.clone())
+            .map_err(|error| WireDecodeError::new("task.layout.get request", error.to_string()))?;
+        decoded
+            .validate()
+            .map_err(|reason| WireDecodeError::new("task.layout.get request", reason))?;
+        Ok(decoded)
+    }
+
+    /// Decodes and validates a `task.layout.get` response payload produced by any peer.
+    pub fn decode_task_layout_get_response(
+        value: &serde_json::Value,
+    ) -> Result<TaskLayoutGetResponse, WireDecodeError> {
+        let decoded: TaskLayoutGetResponse = serde_json::from_value(value.clone())
+            .map_err(|error| WireDecodeError::new("task.layout.get response", error.to_string()))?;
+        decoded
+            .validate()
+            .map_err(|reason| WireDecodeError::new("task.layout.get response", reason))?;
+        Ok(decoded)
+    }
+
+    /// Decodes and validates a `task.layout.put` request payload produced by any peer.
+    pub fn decode_task_layout_put_request(
+        value: &serde_json::Value,
+    ) -> Result<TaskLayoutPutRequest, WireDecodeError> {
+        let decoded: TaskLayoutPutRequest = serde_json::from_value(value.clone())
+            .map_err(|error| WireDecodeError::new("task.layout.put request", error.to_string()))?;
+        decoded
+            .validate()
+            .map_err(|reason| WireDecodeError::new("task.layout.put request", reason))?;
+        Ok(decoded)
+    }
+
+    /// Decodes and validates a `task.layout.put` response payload produced by any peer.
+    pub fn decode_task_layout_put_response(
+        value: &serde_json::Value,
+    ) -> Result<TaskLayoutPutResponse, WireDecodeError> {
+        let decoded: TaskLayoutPutResponse = serde_json::from_value(value.clone())
+            .map_err(|error| WireDecodeError::new("task.layout.put response", error.to_string()))?;
+        decoded
+            .validate()
+            .map_err(|reason| WireDecodeError::new("task.layout.put response", reason))?;
         Ok(decoded)
     }
 

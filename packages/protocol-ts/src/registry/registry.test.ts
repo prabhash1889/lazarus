@@ -65,6 +65,8 @@ describe('method manifest', () => {
       'system.getInfo',
       'system.health',
       'system.subscribeEvents',
+      'task.layout.get',
+      'task.layout.put',
       'task.list',
       'workspace.list',
     ]);
@@ -780,7 +782,7 @@ describe('optional method support resolution', () => {
 describe('released floor', () => {
   it('is fully present in the current registry at or above floor versions', () => {
     assert.deepEqual(releasedFloorGaps(), []);
-    assert.equal(RELEASED_FLOOR.size, 10);
+    assert.equal(RELEASED_FLOOR.size, 12);
   });
 
   it('snapshots to exactly the floor methods', () => {
@@ -794,6 +796,8 @@ describe('released floor', () => {
       'system.getInfo',
       'system.health',
       'system.subscribeEvents',
+      'task.layout.get',
+      'task.layout.put',
       'task.list',
       'workspace.list',
     ]);

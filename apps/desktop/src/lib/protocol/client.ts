@@ -160,6 +160,8 @@ const RPC_ROUTES: Record<string, { path: string; verb: 'GET' | 'POST' }> = {
   'system.subscribeEvents': { path: '/system/events', verb: 'GET' },
   'workspace.list': { path: '/workspaces', verb: 'GET' },
   'task.list': { path: '/tasks', verb: 'GET' },
+  'task.layout.get': { path: '/task/layout', verb: 'GET' },
+  'task.layout.put': { path: '/task/layout/save', verb: 'POST' },
   'process.start': { path: '/process/start', verb: 'POST' },
   'process.stop': { path: '/process/stop', verb: 'POST' },
   'process.list': { path: '/process/list', verb: 'GET' },
