@@ -374,9 +374,18 @@ fn dial(endpoint: &DiscoveredHost) -> io::Result<IpcStream> {
             ))
         }
         #[cfg(not(windows))]
-        "unixSocket" => Ok(IpcStream::UnixSocket(tokio::net::UnixStream::connect(
-            &endpoint.path,
-        )?)),
+        "unixSocket" => {
+            // `dial` is synchronous, so connect through std and hand the
+            // socket to tokio in nonblocking mode (mirrors the blocking
+            // ClientOptions::open on Windows).
+            use std::os::unix::net::UnixStream as StdUnixStream;
+
+            let stream = StdUnixStream::connect(&endpoint.path)?;
+            stream.set_nonblocking(true)?;
+            Ok(IpcStream::UnixSocket(tokio::net::UnixStream::from_std(
+                stream,
+            )?))
+        }
         other => Err(io::Error::other(format!(
             "this platform cannot serve the Host endpoint kind {other:?}"
         ))),
