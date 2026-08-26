@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useId,
   useImperativeHandle,
   useMemo,
   useRef,
@@ -100,6 +101,10 @@ export function VirtualList<TItem>(props: VirtualListProps<TItem>): ReactNode {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [measuredHeight, setMeasuredHeight] = useState(viewportHeight ?? FALLBACK_VIEWPORT_HEIGHT);
+  // Unique per instance so several lists can coexist without colliding
+  // aria-activedescendant/option ids.
+  const listId = useId();
+  const optionId = (index: number): string => `${listId}-opt-${index}`;
 
   useEffect(() => {
     if (viewportHeight !== undefined) {
@@ -319,7 +324,7 @@ export function VirtualList<TItem>(props: VirtualListProps<TItem>): ReactNode {
         key={row.key}
         data-virtual-row={index}
         role="option"
-        id={`vlist-opt-${index}`}
+        id={optionId(index)}
         aria-selected={isActive}
         aria-setsize={itemCount}
         aria-posinset={(itemPositions.get(index) ?? 0) + 1}
@@ -345,7 +350,7 @@ export function VirtualList<TItem>(props: VirtualListProps<TItem>): ReactNode {
       role="listbox"
       aria-label={ariaLabel}
       tabIndex={0}
-      aria-activedescendant={activeRendered ? `vlist-opt-${activeIndex}` : undefined}
+      aria-activedescendant={activeRendered ? optionId(activeIndex) : undefined}
       onKeyDown={handleKeyDown}
       onScroll={handleScroll}
     >

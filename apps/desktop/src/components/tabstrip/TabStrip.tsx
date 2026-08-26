@@ -56,7 +56,6 @@ export function TabStrip(props: TabStripProps): ReactNode {
   const [dragging, setDragging] = useState(false);
   // Roving tabindex state: which tab is the single tab stop of the list.
   const [focusIndex, setFocusIndex] = useState(0);
-  const tablistRef = useRef<HTMLDivElement | null>(null);
   const tabRefs = useRef<Array<HTMLButtonElement | HTMLDivElement | null>>([]);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const measureRefs = useRef<Array<HTMLDivElement | null>>([]);
@@ -70,6 +69,11 @@ export function TabStrip(props: TabStripProps): ReactNode {
   const visible = epicTabs.slice(0, Math.max(0, inlineCount));
   const hidden = epicTabs.slice(Math.max(0, inlineCount));
   const tabIds: TabId[] = [...PINNED_TABS, ...visible];
+  // The tablist owns its tabs through aria-owns so the visible layout row
+  // can keep per-tab wrappers (tab + close button) without breaking the
+  // required tablist->tab ownership contract.
+  const domIds = tabIds.map((id) => `shell-tab-${id}`);
+  const tabButtonId = (id: TabId): string => `shell-tab-${id}`;
 
   // Keep the roving tab stop on the selected tab whenever selection moves.
   useEffect(() => {
@@ -181,6 +185,7 @@ export function TabStrip(props: TabStripProps): ReactNode {
       ref={(el) => {
         tabRefs.current[index] = el;
       }}
+      id={tabButtonId(id)}
       type="button"
       role="tab"
       aria-selected={activeTab === id}
@@ -216,6 +221,7 @@ export function TabStrip(props: TabStripProps): ReactNode {
         <button
           type="button"
           role="tab"
+          id={tabButtonId(epicId)}
           aria-selected={isActive}
           tabIndex={tabIndex}
           title={entity?.title ?? epicId}
@@ -268,13 +274,13 @@ export function TabStrip(props: TabStripProps): ReactNode {
   return (
     <div className="tabstrip" ref={containerRef} data-testid="tab-strip">
       <div
-        ref={tablistRef}
         role="tablist"
         aria-label="Open tabs"
-        className="tabstrip-tabs"
+        aria-owns={domIds.join(' ') || undefined}
+        className="tabstrip-tablist"
         data-testid="tab-list"
-        onKeyDown={onTablistKeyDown}
-      >
+      />
+      <div className="tabstrip-tabs" onKeyDown={onTablistKeyDown}>
         {PINNED_TABS.map((id, index) => renderPinnedTab(id, index))}
         {visible.map((epicId, index) => renderEpicTab(epicId, index))}
       </div>

@@ -153,6 +153,7 @@ export function CommandPalette(): ReactNode {
             className="palette-input"
             data-testid="palette-input"
             placeholder="Type a command..."
+            aria-label="Search commands"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             onKeyDown={handleInputKeyDown}

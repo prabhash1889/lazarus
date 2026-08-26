@@ -18,7 +18,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
 
 export default function SettingsScreen(): ReactNode {
   return (
-    <div className="settings-layout">
+    <main className="settings-layout">
       <nav className="settings-nav" aria-label="Settings sections">
         <ul>
           {SETTINGS_SECTIONS.map((section) => (
@@ -39,6 +39,6 @@ export default function SettingsScreen(): ReactNode {
       <div className="settings-panel-host">
         <Outlet />
       </div>
-    </div>
+    </main>
   );
 }

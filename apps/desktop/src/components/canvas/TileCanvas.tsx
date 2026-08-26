@@ -16,6 +16,8 @@ import {
   closeTile,
   findLeaf,
   focusTile,
+  MAX_RATIO,
+  MIN_RATIO,
   moveTile,
   openTileInLeaf,
   setMaximized,
@@ -140,6 +142,9 @@ function SplitView({ split, doc, onChange, ...rest }: SplitViewProps): ReactNode
         role="separator"
         aria-orientation={split.direction === 'row' ? 'vertical' : 'horizontal'}
         aria-label={`Resize ${split.direction} split`}
+        aria-valuenow={Math.round(clampRatio(split.ratio) * 100)}
+        aria-valuemin={Math.round(MIN_RATIO * 100)}
+        aria-valuemax={Math.round(MAX_RATIO * 100)}
         tabIndex={0}
         className={joinClassNames(
           'tile-splitter',
@@ -217,39 +222,41 @@ function LeafView({ leaf, doc, onChange, renderTile, createTile }: LeafViewProps
       onDrop={onDrop}
     >
       <header className="tile-pane-header">
-        <div
-          className="tile-pane-tabs"
+        <span
+          className="tile-pane-tablist"
           role="tablist"
           aria-label="Open tiles"
-          onKeyDown={onTablistKeyDown}
-        >
+          aria-owns={leaf.tiles.map((tile) => `pane-tab-${tile.id}`).join(' ') || undefined}
+        />
+        <div className="tile-pane-tabs" onKeyDown={onTablistKeyDown}>
           {leaf.tiles.map((tile, index) => (
-            <button
-              key={tile.id}
-              ref={(el) => {
-                tabRefs.current[index] = el;
-              }}
-              type="button"
-              role="tab"
-              aria-selected={tile.id === leaf.activeTileId}
-              tabIndex={rovingTabIndex(index, focusIndex)}
-              className={joinClassNames(
-                'tile-tab',
-                tile.id === leaf.activeTileId && 'tile-tab-active',
-              )}
-              data-testid={`tile-tab-${tile.id}`}
-              draggable
-              onFocus={() => setFocusIndex(index)}
-              onDragStart={(event) => {
-                event.dataTransfer.setData(TILE_MIME, tile.id);
-                event.dataTransfer.effectAllowed = 'move';
-              }}
-              onClick={() => onChange(focusTile(doc, tile.id))}
-            >
-              {tile.kind}
-              <span
-                role="button"
-                tabIndex={-1}
+            <div key={tile.id} className="tile-tab-wrap" data-testid={`tile-${tile.id}`}>
+              <button
+                ref={(el) => {
+                  tabRefs.current[index] = el;
+                }}
+                id={`pane-tab-${tile.id}`}
+                type="button"
+                role="tab"
+                aria-selected={tile.id === leaf.activeTileId}
+                tabIndex={rovingTabIndex(index, focusIndex)}
+                className={joinClassNames(
+                  'tile-tab',
+                  tile.id === leaf.activeTileId && 'tile-tab-active',
+                )}
+                data-testid={`tile-tab-${tile.id}`}
+                draggable
+                onFocus={() => setFocusIndex(index)}
+                onDragStart={(event) => {
+                  event.dataTransfer.setData(TILE_MIME, tile.id);
+                  event.dataTransfer.effectAllowed = 'move';
+                }}
+                onClick={() => onChange(focusTile(doc, tile.id))}
+              >
+                <span className="tile-tab-title">{tile.kind}</span>
+              </button>
+              <button
+                type="button"
                 aria-label={`Close ${tile.kind} tile`}
                 className="tile-tab-close"
                 data-testid={`close-${tile.id}`}
@@ -260,19 +267,10 @@ function LeafView({ leaf, doc, onChange, renderTile, createTile }: LeafViewProps
                     onChange(next);
                   }
                 }}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter' || event.key === ' ') {
-                    event.stopPropagation();
-                    const next = closeTile(doc, tile.id);
-                    if (next !== null) {
-                      onChange(next);
-                    }
-                  }
-                }}
               >
                 ×
-              </span>
-            </button>
+              </button>
+            </div>
           ))}
         </div>
         <div className="tile-pane-actions">

@@ -43,16 +43,16 @@ export default function EpicScreen(): ReactNode {
 
   if (doc === null) {
     return (
-      <div className="epic-shell">
+      <main className="epic-shell">
         <p className="muted" data-testid="epic-loading">
           Restoring canvas…
         </p>
-      </div>
+      </main>
     );
   }
 
   return (
-    <div className="epic-shell">
+    <main className="epic-shell">
       <header className="epic-header">
         <h1>{entity?.title ?? 'Epic'}</h1>
         <span className="muted">{taskId}</span>
@@ -63,6 +63,6 @@ export default function EpicScreen(): ReactNode {
         renderTile={(binding) => <TilePlaceholder binding={binding} />}
         createTile={createTile}
       />
-    </div>
+    </main>
   );
 }

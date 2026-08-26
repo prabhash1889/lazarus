@@ -725,6 +725,21 @@ kbd {
   overflow: hidden;
 }
 
+/* The real tablist element is empty (it owns its tabs via aria-owns so the
+   visible row can hold per-tab wrappers); keep it in the accessibility
+   tree but out of the layout. */
+.tabstrip-tablist,
+.tile-pane-tablist {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 .shell-tab {
   display: inline-flex;
   align-items: center;
@@ -953,6 +968,13 @@ button.shell-tab-active:hover {
   overflow: hidden;
 }
 
+.tile-tab-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+
 .tile-tab {
   display: inline-flex;
   align-items: center;
@@ -968,6 +990,11 @@ button.shell-tab-active:hover {
   white-space: nowrap;
 }
 
+.tile-tab-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .tile-tab:hover {
   background: var(--color-surface-hover);
   color: var(--color-text);
@@ -981,7 +1008,11 @@ button.shell-tab-active:hover {
 
 .tile-tab-close {
   visibility: hidden;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border: none;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: inherit;
   font-size: var(--text-sm);
@@ -990,7 +1021,9 @@ button.shell-tab-active:hover {
   padding: 0 2px;
 }
 
-.tile-tab:hover .tile-tab-close,
+/* Keyboard users must always be able to see (and reach) the close
+   affordance, mirroring the header tab strip behavior. */
+.tile-tab-wrap:hover .tile-tab-close,
 .tile-tab-close:focus-visible {
   visibility: visible;
 }

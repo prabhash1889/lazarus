@@ -154,17 +154,17 @@ describe('VirtualList', () => {
     expect(document.activeElement).toBe(viewport);
 
     await user.keyboard('{ArrowDown}');
-    expect(viewport.getAttribute('aria-activedescendant')).toBe('vlist-opt-0');
+    expect(viewport.getAttribute('aria-activedescendant')?.endsWith('-opt-0')).toBe(true);
     await user.keyboard('{ArrowDown}{ArrowDown}');
-    expect(viewport.getAttribute('aria-activedescendant')).toBe('vlist-opt-2');
+    expect(viewport.getAttribute('aria-activedescendant')?.endsWith('-opt-2')).toBe(true);
     expect(
       screen.getByText('Item 2').closest('[role="option"]')?.getAttribute('aria-selected'),
     ).toBe('true');
 
     await user.keyboard('{End}');
-    expect(viewport.getAttribute('aria-activedescendant')).toBe('vlist-opt-9');
+    expect(viewport.getAttribute('aria-activedescendant')?.endsWith('-opt-9')).toBe(true);
     await user.keyboard('{Home}');
-    expect(viewport.getAttribute('aria-activedescendant')).toBe('vlist-opt-0');
+    expect(viewport.getAttribute('aria-activedescendant')?.endsWith('-opt-0')).toBe(true);
 
     await user.keyboard('{ArrowDown}');
     await user.keyboard('{Enter}');
