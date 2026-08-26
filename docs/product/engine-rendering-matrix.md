@@ -26,20 +26,20 @@ instead of after feature screens exist.
 Statuses: `verified` - manually exercised on this engine; `automated-only` - covered by the jsdom
 test suite but not yet interactively validated; `blocked` - cannot work without mitigation.
 
-| Component | Engine | Status | Notes |
-|---|---|---|---|
-| xterm.js terminal | jsdom (CI) | verified | Mounts and reports ready; input echo wired. Canvas/WebGL renderers cannot be exercised in jsdom by design. |
-| xterm.js terminal | WebView2 (Windows) | automated-only | Validate DOM renderer + typed input interactively; WebGL addon is intentionally not enabled yet. |
-| xterm.js terminal | WKWebView (macOS) | automated-only | Validate after first macOS debug build is exercised. |
-| xterm.js terminal | WebKitGTK (Linux) | automated-only | Validate font fallback and DPR scaling; known WebKitGTK caret issues may apply (see gaps). |
-| Diff view | jsdom (CI) | verified | Hunk parsing, signed line classes, and horizontal overflow behavior tested. |
-| Diff view | WebView2 (Windows) | automated-only | Check subpixel alignment of monospace columns at 125%/150% OS scale. |
-| Diff view | WKWebView (macOS) | automated-only | Check `-webkit-overflow-scrolling` behavior for large hunks. |
-| Diff view | WebKitGTK (Linux) | automated-only | Verify soft-wrap disabled rendering stays inside bounds. |
-| CodeMirror editor | jsdom (CI) | verified | Mounts, accepts typed input, counts document updates (with Range geometry shims). |
-| CodeMirror editor | WebView2 (Windows) | automated-only | Validate IME composition and bidirectional text before artifact editing ships. |
-| CodeMirror editor | WKWebView (macOS) | automated-only | Known CM6/WKWebView measurement quirks; verify gutter alignment. |
-| CodeMirror editor | WebKitGTK (Linux) | automated-only | Verify focus rings and keyboard navigation match the other engines. |
+| Component         | Engine             | Status         | Notes                                                                                                      |
+| ----------------- | ------------------ | -------------- | ---------------------------------------------------------------------------------------------------------- |
+| xterm.js terminal | jsdom (CI)         | verified       | Mounts and reports ready; input echo wired. Canvas/WebGL renderers cannot be exercised in jsdom by design. |
+| xterm.js terminal | WebView2 (Windows) | automated-only | Validate DOM renderer + typed input interactively; WebGL addon is intentionally not enabled yet.           |
+| xterm.js terminal | WKWebView (macOS)  | automated-only | Validate after first macOS debug build is exercised.                                                       |
+| xterm.js terminal | WebKitGTK (Linux)  | automated-only | Validate font fallback and DPR scaling; known WebKitGTK caret issues may apply (see gaps).                 |
+| Diff view         | jsdom (CI)         | verified       | Hunk parsing, signed line classes, and horizontal overflow behavior tested.                                |
+| Diff view         | WebView2 (Windows) | automated-only | Check subpixel alignment of monospace columns at 125%/150% OS scale.                                       |
+| Diff view         | WKWebView (macOS)  | automated-only | Check `-webkit-overflow-scrolling` behavior for large hunks.                                               |
+| Diff view         | WebKitGTK (Linux)  | automated-only | Verify soft-wrap disabled rendering stays inside bounds.                                                   |
+| CodeMirror editor | jsdom (CI)         | verified       | Mounts, accepts typed input, counts document updates (with Range geometry shims).                          |
+| CodeMirror editor | WebView2 (Windows) | automated-only | Validate IME composition and bidirectional text before artifact editing ships.                             |
+| CodeMirror editor | WKWebView (macOS)  | automated-only | Known CM6/WKWebView measurement quirks; verify gutter alignment.                                           |
+| CodeMirror editor | WebKitGTK (Linux)  | automated-only | Verify focus rings and keyboard navigation match the other engines.                                        |
 
 ## Known gaps and mitigations
 
