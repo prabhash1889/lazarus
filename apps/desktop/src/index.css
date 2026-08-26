@@ -429,3 +429,45 @@ body {
 .toast-body span {
   color: var(--color-text-muted);
 }
+
+.vlist-viewport {
+  position: relative;
+  overflow: auto;
+  border-radius: var(--radius-md);
+  outline: none;
+}
+
+.vlist-canvas {
+  width: 100%;
+}
+
+.vlist-row {
+  display: flex;
+  align-items: center;
+  cursor: default;
+}
+
+.vlist-row-active {
+  background: var(--color-accent-soft);
+}
+
+button.vlist-row,
+[role='option'][data-clickable='true'] {
+  cursor: pointer;
+}
+
+.vlist-header {
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+.vlist-empty {
+  margin: 0;
+  padding: var(--space-3);
+}
