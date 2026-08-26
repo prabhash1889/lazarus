@@ -186,4 +186,44 @@ describe('tile canvas', () => {
     }
     expect(ratioOf(currentDoc())).toBeCloseTo(0.1, 5);
   });
+
+  describe('roving tabindex on pane tile tabs', () => {
+    function twoTileDoc(): CanvasDoc {
+      let doc = openTile(emptyCanvasDoc(), { id: 'tile-a', entityId: 'epic-1', kind: 'chat' });
+      doc = openTile(doc, { id: 'tile-b', entityId: 'epic-1', kind: 'artifact' });
+      return doc;
+    }
+
+    it('keeps one tab stop per pane on the active tile tab', () => {
+      makeEpic();
+      render(<Harness initial={twoTileDoc()} />);
+      const tabs = screen.getAllByRole('tab');
+      expect(tabs.map((tab) => tab.getAttribute('tabindex'))).toEqual(['-1', '0']);
+    });
+
+    it('moves focus with arrow keys while activation stays manual', async () => {
+      const user = userEvent.setup();
+      makeEpic();
+      render(<Harness initial={twoTileDoc()} />);
+
+      // tile-b opened last so it starts active.
+      const tabs = screen.getAllByRole('tab');
+      expect(tabs.map((tab) => tab.getAttribute('tabindex'))).toEqual(['-1', '0']);
+
+      const firstTab = screen.getByTestId('tile-tab-tile-a');
+      firstTab.focus();
+      await user.keyboard('{ArrowRight}');
+      expect(document.activeElement).toBe(screen.getByTestId('tile-tab-tile-b'));
+
+      // Clicking activates; the roving stop follows the new active tab.
+      await user.click(firstTab);
+      expect(screen.getByTestId('tile-tab-tile-a').getAttribute('aria-selected')).toBe('true');
+      expect(screen.getByTestId('tile-tab-tile-a').getAttribute('tabindex')).toBe('0');
+      expect(screen.getByTestId('tile-tab-tile-b').getAttribute('tabindex')).toBe('-1');
+
+      // ArrowLeft from the first tab wraps to the last.
+      await user.keyboard('{ArrowLeft}');
+      expect(document.activeElement).toBe(screen.getByTestId('tile-tab-tile-b'));
+    });
+  });
 });

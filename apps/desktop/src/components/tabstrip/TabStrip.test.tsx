@@ -40,6 +40,10 @@ function seedEpics(count: number): string[] {
   return ids;
 }
 
+function expectFocused(element: Element): void {
+  expect(document.activeElement).toBe(element);
+}
+
 describe('header tab strip', () => {
   afterEach(() => {
     cleanup();
@@ -180,5 +184,74 @@ describe('header tab strip', () => {
     const handlers = setupStrip();
     await userEvent.setup().click(screen.getByTestId('new-epic'));
     expect(handlers.newEpic).toHaveBeenCalledTimes(1);
+  });
+
+  describe('roving tabindex keyboard navigation', () => {
+    it('keeps a single tab stop on the active tab', () => {
+      seedEpics(2);
+      render(
+        <TabStrip
+          activeTab="history"
+          onSelect={vi.fn()}
+          onClose={vi.fn()}
+          onReorder={vi.fn()}
+          onNewEpic={vi.fn()}
+        />,
+      );
+      const tablist = screen.getByTestId('tab-list');
+      expect(tablist.getAttribute('role')).toBe('tablist');
+      const tabs = screen.getAllByRole('tab');
+      expect(tabs.map((tab) => tab.getAttribute('tabindex'))).toEqual(['-1', '0', '-1', '-1', '-1']);
+    });
+
+    it('moves the roving tab stop with arrow keys without activating', async () => {
+      const handlers = setupStrip();
+      const user = userEvent.setup();
+      const first = screen.getByTestId('tab-draft');
+      first.focus();
+      await user.keyboard('{ArrowRight}');
+      expectFocused(screen.getByTestId('tab-history'));
+      // No seeded Epics: the last tab in the list is Settings.
+      await user.keyboard('{End}');
+      expectFocused(screen.getByTestId('tab-settings'));
+      expect(handlers.select).not.toHaveBeenCalled();
+
+      await user.keyboard('{Home}');
+      expectFocused(screen.getByTestId('tab-draft'));
+    });
+
+    it('wraps from the last tab back to the first', async () => {
+      setupStrip();
+      const user = userEvent.setup();
+      screen.getByTestId('tab-settings').focus();
+      await user.keyboard('{ArrowRight}');
+      expectFocused(screen.getByTestId('tab-draft'));
+    });
+
+    it('follows selection when the active tab changes externally', () => {
+      const handlers = { select: vi.fn(), close: vi.fn(), reorder: vi.fn(), newEpic: vi.fn() };
+      const [id] = seedEpics(1);
+      const { rerender } = render(
+        <TabStrip
+          activeTab="draft"
+          onSelect={handlers.select}
+          onClose={handlers.close}
+          onReorder={handlers.reorder}
+          onNewEpic={handlers.newEpic}
+        />,
+      );
+      rerender(
+        <TabStrip
+          activeTab={id!}
+          onSelect={handlers.select}
+          onClose={handlers.close}
+          onReorder={handlers.reorder}
+          onNewEpic={handlers.newEpic}
+        />,
+      );
+      const tabs = screen.getAllByRole('tab');
+      expect(tabs[tabs.length - 1]?.getAttribute('tabindex')).toBe('0');
+      expect(tabs[0]?.getAttribute('tabindex')).toBe('-1');
+    });
   });
 });

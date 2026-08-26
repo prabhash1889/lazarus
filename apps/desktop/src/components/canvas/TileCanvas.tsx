@@ -1,5 +1,6 @@
 import {
   useCallback,
+  useEffect,
   useRef,
   useState,
   type DragEvent,
@@ -9,6 +10,7 @@ import {
 } from 'react';
 
 import { joinClassNames } from '../Button';
+import { handleRovingKeys, rovingTabIndex } from '../../lib/a11y/roving-tabindex';
 import {
   clampRatio,
   closeTile,
@@ -162,21 +164,39 @@ interface LeafViewProps extends Omit<NodeViewProps, 'node'> {
 function LeafView({ leaf, doc, onChange, renderTile, createTile }: LeafViewProps): ReactNode {
   const maximizedHere = doc.maximizedLeafId === leaf.id;
   const anyMaximized = doc.maximizedLeafId !== null;
+  // Roving tabindex for the pane's tile tabs: one tab stop per pane.
+  const [focusIndex, setFocusIndex] = useState(0);
+  const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
+
+  useEffect(() => {
+    const index = leaf.tiles.findIndex((tile) => tile.id === leaf.activeTileId);
+    if (index >= 0) {
+      setFocusIndex(index);
+    }
+  }, [leaf.activeTileId, leaf.tiles]);
+
+  const onTablistKeyDown = (event: KeyboardEvent<HTMLElement>): void => {
+    handleRovingKeys(event, {
+      count: leaf.tiles.length,
+      current: focusIndex,
+      orientation: 'horizontal',
+      onMove: (next) => {
+        setFocusIndex(next);
+        tabRefs.current[next]?.focus();
+      },
+    });
+  };
 
   const openIntoSplit = (direction: SplitDirection) => () =>
     onChange(splitLeaf(doc, leaf.id, direction).doc);
 
   const onDrop = (event: DragEvent<HTMLElement>): void => {
     const tileId = event.dataTransfer.getData(TILE_MIME);
-
-    console.info('DBG onDrop tileId=', JSON.stringify(tileId));
     if (tileId === '') {
       return;
     }
     event.preventDefault();
     const moved = moveTile(doc, tileId, leaf.id);
-
-    console.info('DBG moved=', JSON.stringify(moved)?.slice(0, 120));
     if (moved !== null) {
       onChange(moved);
     }
@@ -197,19 +217,29 @@ function LeafView({ leaf, doc, onChange, renderTile, createTile }: LeafViewProps
       onDrop={onDrop}
     >
       <header className="tile-pane-header">
-        <div className="tile-pane-tabs" role="tablist" aria-label="Open tiles">
-          {leaf.tiles.map((tile) => (
+        <div
+          className="tile-pane-tabs"
+          role="tablist"
+          aria-label="Open tiles"
+          onKeyDown={onTablistKeyDown}
+        >
+          {leaf.tiles.map((tile, index) => (
             <button
               key={tile.id}
+              ref={(el) => {
+                tabRefs.current[index] = el;
+              }}
               type="button"
               role="tab"
               aria-selected={tile.id === leaf.activeTileId}
+              tabIndex={rovingTabIndex(index, focusIndex)}
               className={joinClassNames(
                 'tile-tab',
                 tile.id === leaf.activeTileId && 'tile-tab-active',
               )}
               data-testid={`tile-tab-${tile.id}`}
               draggable
+              onFocus={() => setFocusIndex(index)}
               onDragStart={(event) => {
                 event.dataTransfer.setData(TILE_MIME, tile.id);
                 event.dataTransfer.effectAllowed = 'move';

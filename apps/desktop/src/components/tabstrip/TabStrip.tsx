@@ -1,7 +1,15 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
+} from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 
 import { joinClassNames } from '../Button';
+import { handleRovingKeys, rovingTabIndex } from '../../lib/a11y/roving-tabindex';
 import { useEpicsStore } from '../../state/epics-store';
 import { PINNED_TABS, useShellStore, type TabId } from '../../state/shell-store';
 import { computeTargetIndex, planOverflow, type TabRect } from './tabstrip-model';
@@ -11,7 +19,7 @@ import { computeTargetIndex, planOverflow, type TabRect } from './tabstrip-model
  * (Draft | History | Settings) plus one tab per open Epic. Epics support
  * middle-click and affordance closing - which never deletes the backing
  * entity - pointer drag reordering, an overflow menu when the strip runs
- * out of room, and keyboard navigation.
+ * out of room, and roving-tabindex keyboard navigation (Phase 3.5).
  */
 
 export const DRAG_TILE_MIME = 'application/x-lazarus-tab-id';
@@ -45,9 +53,26 @@ export function TabStrip(props: TabStripProps): ReactNode {
   const [menuOpen, setMenuOpen] = useState(false);
   const [inlineCount, setInlineCount] = useState(epicTabs.length);
   const [dragging, setDragging] = useState(false);
+  // Roving tabindex state: which tab is the single tab stop of the list.
+  const [focusIndex, setFocusIndex] = useState(0);
+  const tablistRef = useRef<HTMLDivElement | null>(null);
+  const tabRefs = useRef<Array<HTMLButtonElement | HTMLDivElement | null>>([]);
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const tabRefs = useRef<Array<HTMLDivElement | null>>([]);
+  const measureRefs = useRef<Array<HTMLDivElement | null>>([]);
   const drag = useRef<{ index: number; startX: number; active: boolean } | null>(null);
+
+  const visible = epicTabs.slice(0, Math.max(0, inlineCount));
+  const hidden = epicTabs.slice(Math.max(0, inlineCount));
+  const tabIds: TabId[] = [...PINNED_TABS, ...visible];
+
+  // Keep the roving tab stop on the selected tab whenever selection moves.
+  useEffect(() => {
+    const ids: TabId[] = [...PINNED_TABS, ...epicTabs.slice(0, Math.max(0, inlineCount))];
+    const index = ids.indexOf(activeTab);
+    if (index >= 0) {
+      setFocusIndex(index);
+    }
+  }, [activeTab, epicTabs, inlineCount]);
 
   // Measure overflow whenever the tab set changes or the window resizes.
   useLayoutEffect(() => {
@@ -58,7 +83,7 @@ export function TabStrip(props: TabStripProps): ReactNode {
       }
       const available = container.getBoundingClientRect().width;
       const widths = epicTabs.map((_, index) => {
-        const el = tabRefs.current[index];
+        const el = measureRefs.current[index];
         return el?.getBoundingClientRect().width ?? 0;
       });
       setInlineCount(planOverflow(available, widths).inlineCount);
@@ -94,9 +119,6 @@ export function TabStrip(props: TabStripProps): ReactNode {
     return undefined;
   }, [menuOpen]);
 
-  const hidden = epicTabs.slice(inlineCount);
-  const visible = epicTabs.slice(0, inlineCount);
-
   const startDrag = (event: ReactPointerEvent<HTMLElement>, index: number): void => {
     if (event.button !== 0 || visible.length < 2) {
       return;
@@ -117,7 +139,7 @@ export function TabStrip(props: TabStripProps): ReactNode {
       return;
     }
     const layout: TabRect[] = visible.map((id, index) => {
-      const el = tabRefs.current[index];
+      const el = measureRefs.current[index];
       const rect = el?.getBoundingClientRect();
       return { id, left: rect?.left ?? 0, right: rect?.right ?? 0 };
     });
@@ -133,14 +155,33 @@ export function TabStrip(props: TabStripProps): ReactNode {
     setDragging(false);
   };
 
-  const renderPinnedTab = (id: (typeof PINNED_TABS)[number]): ReactNode => (
+  // Manual activation: arrows and Home/End move the roving tab stop;
+  // Enter/Space/click activate the focused tab (native button behavior).
+  const onTablistKeyDown = (event: ReactKeyboardEvent<HTMLElement>): void => {
+    handleRovingKeys(event, {
+      count: tabIds.length,
+      current: focusIndex,
+      orientation: 'horizontal',
+      onMove: (next) => {
+        setFocusIndex(next);
+        tabRefs.current[next]?.focus();
+      },
+    });
+  };
+
+  const renderPinnedTab = (id: (typeof PINNED_TABS)[number], index: number): ReactNode => (
     <button
       key={id}
+      ref={(el) => {
+        tabRefs.current[index] = el;
+      }}
       type="button"
       role="tab"
       aria-selected={activeTab === id}
+      tabIndex={rovingTabIndex(index, focusIndex)}
       className={joinClassNames('shell-tab', activeTab === id && 'shell-tab-active')}
       data-testid={`tab-${id}`}
+      onFocus={() => setFocusIndex(index)}
       onClick={() => onSelect(id)}
     >
       {PINNED_LABELS[id]}
@@ -150,11 +191,13 @@ export function TabStrip(props: TabStripProps): ReactNode {
   const renderEpicTab = (epicId: string, index: number): ReactNode => {
     const entity = epics[epicId];
     const isActive = activeTab === epicId;
+    const tabIndex = rovingTabIndex(PINNED_TABS.length + index, focusIndex);
     return (
       <div
         key={epicId}
         ref={(el) => {
-          tabRefs.current[index] = el;
+          measureRefs.current[index] = el;
+          tabRefs.current[PINNED_TABS.length + index] = el;
         }}
         className={joinClassNames(
           'shell-tab',
@@ -168,8 +211,10 @@ export function TabStrip(props: TabStripProps): ReactNode {
           type="button"
           role="tab"
           aria-selected={isActive}
+          tabIndex={tabIndex}
           title={entity?.title ?? epicId}
           className="shell-tab-label"
+          onFocus={() => setFocusIndex(PINNED_TABS.length + index)}
           onAuxClick={(event) => {
             // Middle-click closes without ever touching the entity.
             if (event.button === 1) {
@@ -215,15 +260,18 @@ export function TabStrip(props: TabStripProps): ReactNode {
   };
 
   return (
-    <div
-      className="tabstrip"
-      ref={containerRef}
-      data-testid="tab-strip"
-      role="tablist"
-      aria-label="Open tabs"
-    >
-      {PINNED_TABS.map(renderPinnedTab)}
-      {visible.map((epicId, index) => renderEpicTab(epicId, index))}
+    <div className="tabstrip" ref={containerRef} data-testid="tab-strip">
+      <div
+        ref={tablistRef}
+        role="tablist"
+        aria-label="Open tabs"
+        className="tabstrip-tabs"
+        data-testid="tab-list"
+        onKeyDown={onTablistKeyDown}
+      >
+        {PINNED_TABS.map((id, index) => renderPinnedTab(id, index))}
+        {visible.map((epicId, index) => renderEpicTab(epicId, index))}
+      </div>
       {hidden.length > 0 ? (
         <div className="tabstrip-overflow">
           <button
@@ -243,6 +291,7 @@ export function TabStrip(props: TabStripProps): ReactNode {
                   key={epicId}
                   type="button"
                   role="menuitem"
+                  tabIndex={-1}
                   className="tabstrip-menu-item"
                   data-testid={`overflow-item-${epicId}`}
                   onClick={() => {

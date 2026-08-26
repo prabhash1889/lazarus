@@ -702,6 +702,15 @@ kbd {
   overflow: hidden;
 }
 
+.tabstrip-tabs {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
 .shell-tab {
   display: inline-flex;
   align-items: center;
